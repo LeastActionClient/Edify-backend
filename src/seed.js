@@ -1,22 +1,17 @@
-import { PrismaClient } from '@prisma/client';
+import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
-
-const prisma = new PrismaClient();
+import { User } from './models/index.js';
 
 async function main() {
-  const superAdminExists = await prisma.user.findFirst({
-    where: { role: 'SUPER_ADMIN' }
-  });
+  const superAdminExists = await User.findOne({ role: 'SUPER_ADMIN' });
 
   if (!superAdminExists) {
     const hashedPassword = await bcrypt.hash('admin123', 10);
-    await prisma.user.create({
-      data: {
-        username: 'superadmin',
-        password: hashedPassword,
-        role: 'SUPER_ADMIN',
-        isActive: true
-      }
+    await User.create({
+      username: 'superadmin',
+      password: hashedPassword,
+      role: 'SUPER_ADMIN',
+      isActive: true
     });
     console.log('Super Admin created with username: superadmin and password: admin123');
   } else {
@@ -24,11 +19,10 @@ async function main() {
   }
 }
 
-main()
+mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/school_project')
+  .then(() => main())
   .catch((e) => {
     console.error(e);
     process.exit(1);
   })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+  .finally(() => mongoose.disconnect());

@@ -1,0 +1,41 @@
+import mongoose from 'mongoose';
+
+const studentSchema = new mongoose.Schema({
+  admissionNumber: { type: String, required: true, unique: true },
+  applicationId: { type: mongoose.Schema.Types.ObjectId, ref: 'Application', unique: true, sparse: true },
+  addedById: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  studentName: { type: String, required: true },
+  fatherName: { type: String, default: '' },
+  motherName: { type: String, default: '' },
+  fatherPhone: { type: String, default: '' },
+  motherPhone: { type: String, default: '' },
+  address: { type: String, default: '' },
+  currentClass: { type: String, required: true },
+  section: { type: String },
+  siblings: { type: mongoose.Schema.Types.Mixed },
+  photoUrl: { type: String },
+  dateOfBirth: { type: Date },
+  gender: { type: String },
+  bloodGroup: { type: String },
+  aadhaarNumber: { type: String },
+  religion: { type: String },
+  community: { type: String },
+  nationality: { type: String },
+  email: { type: String },
+  rollNumber: { type: String },
+  admissionDate: { type: Date },
+  academicYear: { type: String },
+  studentStatus: { type: String },
+  fatherOccupation: { type: String },
+  motherOccupation: { type: String },
+  guardian: { type: String },
+  city: { type: String },
+  state: { type: String },
+  pincode: { type: String },
+  baseFee: { type: Number },
+  includedChargesTotal: { type: Number },
+  activitiesTotal: { type: Number },
+  grandTotal: { type: Number }
+}, { timestamps: true });
+
+export default mongoose.model('Student', studentSchema);

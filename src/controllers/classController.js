@@ -1,14 +1,22 @@
-import prisma from '../utils/prisma.js';
+import { Class, Section, ActivityLog } from '../models/index.js';
 
 export const getClasses = async (req, res) => {
   try {
-    const classes = await prisma.class.findMany({
-      include: {
-        sections: true
-      },
-      orderBy: { name: 'asc' }
+    const classes = await Class.find().sort({ name: 1 });
+    const classIds = classes.map(c => c._id);
+    const sections = await Section.find({ classId: { $in: classIds } });
+    const sectionsByClass = {};
+    sections.forEach(s => {
+      const key = s.classId.toString();
+      if (!sectionsByClass[key]) sectionsByClass[key] = [];
+      sectionsByClass[key].push(s);
     });
-    res.json(classes);
+    const result = classes.map(c => {
+      const obj = c.toObject();
+      obj.sections = sectionsByClass[c._id.toString()] || [];
+      return obj;
+    });
+    res.json(result);
   } catch (error) {
     res.status(500).json({ error: 'Error fetching classes' });
   }
@@ -18,22 +26,18 @@ export const createClass = async (req, res) => {
   try {
     const { name } = req.body;
     
-    const existing = await prisma.class.findUnique({ where: { name } });
+    const existing = await Class.findOne({ name });
     if (existing) {
       res.status(400).json({ error: 'Class already exists' });
       return;
     }
 
-    const newClass = await prisma.class.create({
-      data: { name }
-    });
+    const newClass = await Class.create({ name });
     
-    await prisma.activityLog.create({
-      data: {
-        userId: req.user.id,
-        action: 'CREATED_CLASS',
-        details: `Class ${name} created`
-      }
+    await ActivityLog.create({
+      userId: req.user.id,
+      action: 'CREATED_CLASS',
+      details: `Class ${name} created`
     });
 
     res.status(201).json(newClass);
@@ -44,36 +48,28 @@ export const createClass = async (req, res) => {
 
 export const createSection = async (req, res) => {
   try {
-    const classId = req.params.classId ;
+    const classId = req.params.classId;
     const { name } = req.body;
 
-    const existingClass = await prisma.class.findUnique({ where: { id: classId } });
+    const existingClass = await Class.findById(classId);
     if (!existingClass) {
       res.status(404).json({ error: 'Class not found' });
       return;
     }
 
-    const existingSection = await prisma.section.findUnique({
-      where: {
-        name_classId: { name, classId }
-      }
-    });
+    const existingSection = await Section.findOne({ name, classId });
 
     if (existingSection) {
       res.status(400).json({ error: 'Section already exists in this class' });
       return;
     }
 
-    const section = await prisma.section.create({
-      data: { name, classId }
-    });
+    const section = await Section.create({ name, classId });
 
-    await prisma.activityLog.create({
-      data: {
-        userId: req.user.id,
-        action: 'CREATED_SECTION',
-        details: `Section ${name} created in Class ${existingClass.name}`
-      }
+    await ActivityLog.create({
+      userId: req.user.id,
+      action: 'CREATED_SECTION',
+      details: `Section ${name} created in Class ${existingClass.name}`
     });
 
     res.status(201).json(section);

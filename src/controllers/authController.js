@@ -1,12 +1,12 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import prisma from '../utils/prisma.js';
+import { User, ActivityLog } from '../models/index.js';
 
 export const login = async (req, res) => {
   try {
     const { username, password } = req.body;
 
-    const user = await prisma.user.findUnique({ where: { username } });
+    const user = await User.findOne({ username });
     if (!user || !user.isActive) {
       res.status(401).json({ error: 'Invalid credentials or account disabled' });
       return;
@@ -24,12 +24,10 @@ export const login = async (req, res) => {
       { expiresIn: '1d' }
     );
 
-    await prisma.activityLog.create({
-      data: {
-        userId: user.id,
-        action: 'LOGGED_IN',
-        details: `User ${user.username} logged in`
-      }
+    await ActivityLog.create({
+      userId: user.id,
+      action: 'LOGGED_IN',
+      details: `User ${user.username} logged in`
     });
 
     res.json({
@@ -44,12 +42,8 @@ export const login = async (req, res) => {
 
 export const logout = async (req, res) => {
   try {
-    // Set lastActivity to 5 minutes and 1 second ago so they appear offline immediately
     const offlineTime = new Date(Date.now() - 300001);
-    await prisma.user.update({
-      where: { id: req.user.id },
-      data: { lastActivity: offlineTime }
-    });
+    await User.findByIdAndUpdate(req.user.id, { lastActivity: offlineTime });
     res.json({ message: 'Logged out successfully' });
   } catch (error) {
     console.error(error);

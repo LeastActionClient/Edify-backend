@@ -1,5 +1,5 @@
 import jwt from 'jsonwebtoken';
-import prisma from '../utils/prisma.js';
+import { User } from '../models/index.js';
 
 
 export const authenticate = async (req, res, next) => {
@@ -11,21 +11,17 @@ export const authenticate = async (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret') ;
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret');
     
-    // Check if user still exists
-    const user = await prisma.user.findUnique({ where: { id: decoded.id } });
+    const user = await User.findById(decoded.id);
     if (!user) {
       return res.status(401).json({ error: 'User no longer exists. Please log in again.' });
     }
 
     req.user = decoded;
 
-    // Update last activity
-    await prisma.user.update({
-      where: { id: decoded.id },
-      data: { lastActivity: new Date() }
-    }).catch((err) => console.error("Error updating last activity", err));
+    await User.findByIdAndUpdate(decoded.id, { lastActivity: new Date() })
+      .catch(err => console.error("Error updating last activity", err));
 
     next();
   } catch (ex) {

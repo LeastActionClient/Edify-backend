@@ -1,22 +1,14 @@
-import prisma from '../utils/prisma.js';
+import { Student, Payment, StudentFee, FeeCategory } from '../models/index.js';
 
 export const getDailyCollection = async (req, res) => {
   try {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const payments = await prisma.payment.findMany({
-      where: {
-        paymentDate: {
-          gte: today
-        }
-      },
-      include: {
-        student: { select: { studentName: true, admissionNumber: true } },
-        studentFee: { include: { feeCategory: true } },
-        recordedBy: { select: { username: true } }
-      }
-    });
+    const payments = await Payment.find({ paymentDate: { $gte: today } })
+      .populate('studentId', 'studentName admissionNumber')
+      .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId' } })
+      .populate('recordedById', 'username');
 
     const total = payments.reduce((sum, p) => sum + p.amount, 0);
 
@@ -31,18 +23,10 @@ export const getMonthlyCollection = async (req, res) => {
     const today = new Date();
     const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
 
-    const payments = await prisma.payment.findMany({
-      where: {
-        paymentDate: {
-          gte: firstDay
-        }
-      },
-      include: {
-        student: { select: { studentName: true, admissionNumber: true } },
-        studentFee: { include: { feeCategory: true } },
-        recordedBy: { select: { username: true } }
-      }
-    });
+    const payments = await Payment.find({ paymentDate: { $gte: firstDay } })
+      .populate('studentId', 'studentName admissionNumber')
+      .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId' } })
+      .populate('recordedById', 'username');
 
     const total = payments.reduce((sum, p) => sum + p.amount, 0);
 
@@ -55,25 +39,16 @@ export const getMonthlyCollection = async (req, res) => {
 export const getWeeklyCollection = async (req, res) => {
   try {
     const today = new Date();
-    // Get Monday of the current week
     const firstDay = new Date(today);
     const day = today.getDay();
-    const diff = today.getDate() - day + (day === 0 ? -6 : 1); 
+    const diff = today.getDate() - day + (day === 0 ? -6 : 1);
     firstDay.setDate(diff);
     firstDay.setHours(0, 0, 0, 0);
 
-    const payments = await prisma.payment.findMany({
-      where: {
-        paymentDate: {
-          gte: firstDay
-        }
-      },
-      include: {
-        student: { select: { studentName: true, admissionNumber: true } },
-        studentFee: { include: { feeCategory: true } },
-        recordedBy: { select: { username: true } }
-      }
-    });
+    const payments = await Payment.find({ paymentDate: { $gte: firstDay } })
+      .populate('studentId', 'studentName admissionNumber')
+      .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId' } })
+      .populate('recordedById', 'username');
 
     const total = payments.reduce((sum, p) => sum + p.amount, 0);
     res.json({ total, payments });
@@ -85,21 +60,12 @@ export const getWeeklyCollection = async (req, res) => {
 export const getYearlyCollection = async (req, res) => {
   try {
     const today = new Date();
-    // Assuming academic year or simple calendar year
     const firstDay = new Date(today.getFullYear(), 0, 1);
 
-    const payments = await prisma.payment.findMany({
-      where: {
-        paymentDate: {
-          gte: firstDay
-        }
-      },
-      include: {
-        student: { select: { studentName: true, admissionNumber: true } },
-        studentFee: { include: { feeCategory: true } },
-        recordedBy: { select: { username: true } }
-      }
-    });
+    const payments = await Payment.find({ paymentDate: { $gte: firstDay } })
+      .populate('studentId', 'studentName admissionNumber')
+      .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId' } })
+      .populate('recordedById', 'username');
 
     const total = payments.reduce((sum, p) => sum + p.amount, 0);
     res.json({ total, payments });
@@ -110,10 +76,20 @@ export const getYearlyCollection = async (req, res) => {
 
 export const getPendingFees = async (req, res) => {
   try {
-    const students = await prisma.student.findMany({
-      include: {
-        studentFees: { include: { feeCategory: true } }
-      }
+    const students = await Student.find().lean();
+    const studentIds = students.map(s => s._id);
+    const studentFees = await StudentFee.find({ studentId: { $in: studentIds } })
+      .populate('feeCategoryId');
+
+    const feesByStudent = {};
+    studentFees.forEach(fee => {
+      const sid = fee.studentId.toString();
+      if (!feesByStudent[sid]) feesByStudent[sid] = [];
+      feesByStudent[sid].push(fee);
+    });
+
+    students.forEach(s => {
+      s.studentFees = feesByStudent[s._id.toString()] || [];
     });
 
     let totalPending = 0;
@@ -121,8 +97,8 @@ export const getPendingFees = async (req, res) => {
 
     students.forEach(student => {
       if (!student.studentFees || student.studentFees.length === 0) return;
-      
-      const fullFee = student.studentFees.find(f => f.feeCategory?.name?.toLowerCase().includes('full'));
+
+      const fullFee = student.studentFees.find(f => f.feeCategoryId?.name?.toLowerCase().includes('full'));
       const totalPaid = student.studentFees.reduce((sum, f) => sum + f.paidAmount, 0);
       let pendingAmount = 0;
 
@@ -134,12 +110,11 @@ export const getPendingFees = async (req, res) => {
 
       if (pendingAmount > 0) {
         totalPending += pendingAmount;
-        // Mock a studentFee object so the frontend can render it if needed
         pendingFees.push({
-          id: student.id,
-          student: student,
+          id: student._id,
+          student,
           remainingAmount: pendingAmount,
-          feeCategory: fullFee ? fullFee.feeCategory : { name: 'Combined Pending Dues' }
+          feeCategory: fullFee ? fullFee.feeCategoryId : { name: 'Combined Pending Dues' }
         });
       }
     });
@@ -152,18 +127,26 @@ export const getPendingFees = async (req, res) => {
 
 export const getStudentFeeReport = async (req, res) => {
   try {
-    const students = await prisma.student.findMany({
-      include: {
-        studentFees: {
-          include: { feeCategory: true }
-        }
-      }
+    const students = await Student.find().lean();
+    const studentIds = students.map(s => s._id);
+    const studentFees = await StudentFee.find({ studentId: { $in: studentIds } })
+      .populate('feeCategoryId');
+
+    const feesByStudent = {};
+    studentFees.forEach(fee => {
+      const sid = fee.studentId.toString();
+      if (!feesByStudent[sid]) feesByStudent[sid] = [];
+      feesByStudent[sid].push(fee);
+    });
+
+    students.forEach(s => {
+      s.studentFees = feesByStudent[s._id.toString()] || [];
     });
 
     const report = students.map(student => {
-      const fullFee = student.studentFees.find(f => f.feeCategory?.name?.toLowerCase().includes('full'));
+      const fullFee = student.studentFees.find(f => f.feeCategoryId?.name?.toLowerCase().includes('full'));
       const totalPaid = student.studentFees.reduce((sum, f) => sum + f.paidAmount, 0);
-      
+
       let totalAssigned = 0;
       let totalRemaining = 0;
 
@@ -176,7 +159,7 @@ export const getStudentFeeReport = async (req, res) => {
       }
 
       return {
-        studentId: student.id,
+        studentId: student._id,
         studentName: student.studentName,
         admissionNumber: student.admissionNumber,
         currentClass: student.currentClass,
@@ -194,10 +177,19 @@ export const getStudentFeeReport = async (req, res) => {
 
 export const getCategoryWiseCollection = async (req, res) => {
   try {
-    const feeCategories = await prisma.feeCategory.findMany({
-      include: {
-        studentFees: true
-      }
+    const feeCategories = await FeeCategory.find().lean();
+    const categoryIds = feeCategories.map(c => c._id);
+    const studentFees = await StudentFee.find({ feeCategoryId: { $in: categoryIds } });
+
+    const feesByCategory = {};
+    studentFees.forEach(fee => {
+      const cid = fee.feeCategoryId.toString();
+      if (!feesByCategory[cid]) feesByCategory[cid] = [];
+      feesByCategory[cid].push(fee);
+    });
+
+    feeCategories.forEach(c => {
+      c.studentFees = feesByCategory[c._id.toString()] || [];
     });
 
     const report = feeCategories.map(category => {
@@ -206,7 +198,7 @@ export const getCategoryWiseCollection = async (req, res) => {
       const totalPending = category.studentFees.reduce((sum, f) => sum + f.remainingAmount, 0);
 
       return {
-        categoryId: category.id,
+        categoryId: category._id,
         categoryName: category.name,
         totalExpected,
         totalCollected,

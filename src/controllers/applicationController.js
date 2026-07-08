@@ -1,4 +1,4 @@
-import prisma from '../utils/prisma.js';
+import { Application, Student, ActivityLog, Class, Section, StudentFee } from '../models/index.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -11,7 +11,6 @@ const generateApplicationId = async () => {
       const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
       if (settings.nextApplicationNo) {
         const nextNo = settings.nextApplicationNo;
-        // Auto increment for next time
         const parts = nextNo.split('-');
         if (parts.length >= 2) {
           const lastNumStr = parts[parts.length - 1];
@@ -28,9 +27,7 @@ const generateApplicationId = async () => {
     }
   } catch(e) {}
 
-  const latestApp = await prisma.application.findFirst({
-    orderBy: { createdAt: 'desc' }
-  });
+  const latestApp = await Application.findOne().sort({ createdAt: -1 });
 
   if (!latestApp) return `APP-${currentYear}-0001`;
 
@@ -38,7 +35,7 @@ const generateApplicationId = async () => {
   if (parts.length >= 2) {
     const lastNumStr = parts[parts.length - 1];
     const lastNum = parseInt(lastNumStr, 10);
-    
+
     if (!isNaN(lastNum)) {
       const prefix = parts.slice(0, parts.length - 1).join('-');
       const paddingLength = lastNumStr.length > 0 ? lastNumStr.length : 4;
@@ -51,14 +48,13 @@ const generateApplicationId = async () => {
 
 const generateAdmissionNumber = async () => {
   const currentYear = new Date().getFullYear();
-  
+
   try {
     const settingsPath = path.join(process.cwd(), 'settings.json');
     if (fs.existsSync(settingsPath)) {
       const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
       if (settings.nextAdmissionNo) {
         const nextNo = settings.nextAdmissionNo;
-        // Auto increment for next time
         const parts = nextNo.split('-');
         if (parts.length >= 2) {
           const lastNumStr = parts[parts.length - 1];
@@ -75,14 +71,9 @@ const generateAdmissionNumber = async () => {
     }
   } catch(e) {}
 
-  const latestStudent = await prisma.student.findFirst({
-    orderBy: { createdAt: 'desc' }
-  });
+  const latestStudent = await Student.findOne().sort({ createdAt: -1 });
 
-  const latestApp = await prisma.application.findFirst({
-    where: { adminNo: { not: null } },
-    orderBy: { createdAt: 'desc' }
-  });
+  const latestApp = await Application.findOne({ adminNo: { $ne: null } }).sort({ createdAt: -1 });
 
   let latestRecord = null;
   let numberStr = null;
@@ -109,7 +100,7 @@ const generateAdmissionNumber = async () => {
   if (parts.length >= 2) {
     const lastNumStr = parts[parts.length - 1];
     const lastNum = parseInt(lastNumStr, 10);
-    
+
     if (!isNaN(lastNum)) {
       const prefix = parts.slice(0, parts.length - 1).join('-');
       const paddingLength = lastNumStr.length > 0 ? lastNumStr.length : 4;
@@ -132,40 +123,36 @@ export const getNextNumbers = async (req, res) => {
 
 export const createApplication = async (req, res) => {
   try {
-    const { 
+    const {
       applicationNo, adminNo,
-      studentName, fatherName, motherName, fatherPhone, motherPhone, 
-      address, applyingClass, previousSchool, siblings, feePaid 
+      studentName, fatherName, motherName, fatherPhone, motherPhone,
+      address, applyingClass, previousSchool, siblings, feePaid
     } = req.body;
 
     const applicationId = applicationNo || await generateApplicationId();
     const finalAdminNo = adminNo || await generateAdmissionNumber();
 
-    const application = await prisma.application.create({
-      data: {
-        applicationId,
-        adminNo: finalAdminNo,
-        studentName,
-        fatherName,
-        motherName,
-        fatherPhone,
-        motherPhone,
-        address,
-        applyingClass,
-        previousSchool,
-        siblings: siblings || null,
-        feePaid: feePaid === true || feePaid === 'true',
-        processedById: req.user ? req.user.id : undefined
-      }
+    const application = await Application.create({
+      applicationId,
+      adminNo: finalAdminNo,
+      studentName,
+      fatherName,
+      motherName,
+      fatherPhone,
+      motherPhone,
+      address,
+      applyingClass,
+      previousSchool,
+      siblings: siblings || null,
+      feePaid: feePaid === true || feePaid === 'true',
+      processedById: req.user ? req.user.id : undefined
     });
 
     if (req.user) {
-      await prisma.activityLog.create({
-        data: {
-          userId: req.user.id,
-          action: 'CREATED_APPLICATION',
-          details: `Application ${applicationId} created for ${studentName}`
-        }
+      await ActivityLog.create({
+        userId: req.user.id,
+        action: 'CREATED_APPLICATION',
+        details: `Application ${applicationId} created for ${studentName}`
       });
     }
 
@@ -181,10 +168,7 @@ export const toggleFeeStatus = async (req, res) => {
     const { id } = req.params;
     const { feePaid } = req.body;
 
-    const application = await prisma.application.update({
-      where: { id: id },
-      data: { feePaid: feePaid }
-    });
+    const application = await Application.findByIdAndUpdate(id, { feePaid }, { new: true });
 
     res.json({ message: 'Fee status updated successfully', application });
   } catch (error) {
@@ -194,12 +178,9 @@ export const toggleFeeStatus = async (req, res) => {
 
 export const getApplications = async (req, res) => {
   try {
-    const applications = await prisma.application.findMany({
-      include: {
-        processedBy: { select: { username: true } }
-      },
-      orderBy: { applicationDate: 'desc' }
-    });
+    const applications = await Application.find()
+      .populate('processedById', 'username')
+      .sort({ applicationDate: -1 });
     res.json(applications);
   } catch (error) {
     res.status(500).json({ error: 'Error fetching applications' });
@@ -211,7 +192,7 @@ export const approveApplication = async (req, res) => {
     const { id } = req.params;
     const { section } = req.body;
 
-    const application = await prisma.application.findUnique({ where: { id: id  } });
+    const application = await Application.findById(id);
     if (!application) {
       res.status(404).json({ error: 'Application not found' });
       return;
@@ -229,67 +210,56 @@ export const approveApplication = async (req, res) => {
 
     const admissionNumber = application.adminNo || await generateAdmissionNumber();
 
-    // Transaction to approve application and create student
-    const [updatedApp, newStudent] = await prisma.$transaction([
-      prisma.application.update({
-        where: { id: id  },
-        data: { 
-          status: 'APPROVED',
-          processedById: req.user.id
-        }
-      }),
-      prisma.student.create({
-        data: {
-          admissionNumber,
-          applicationId: application.id,
-          studentName: application.studentName,
-          fatherName: application.fatherName,
-          motherName: application.motherName,
-          fatherPhone: application.fatherPhone,
-          motherPhone: application.motherPhone,
-          address: application.address,
-          currentClass: application.applyingClass,
-          section: section,
-          siblings: application.siblings || null,
-          addedById: req.user.id
-        }
-      })
-    ]);
-
-    // Apply default fees if any
-    const classData = await prisma.class.findUnique({
-      where: { name: application.applyingClass },
-      include: { sections: { where: { name: section } } }
+    const updatedApp = await Application.findByIdAndUpdate(
+      id,
+      { status: 'APPROVED', processedById: req.user.id },
+      { new: true }
+    );
+    const newStudent = await Student.create({
+      admissionNumber,
+      applicationId: application._id,
+      studentName: application.studentName,
+      fatherName: application.fatherName,
+      motherName: application.motherName,
+      fatherPhone: application.fatherPhone,
+      motherPhone: application.motherPhone,
+      address: application.address,
+      currentClass: application.applyingClass,
+      section: section,
+      siblings: application.siblings || null,
+      addedById: req.user.id
     });
+
+    const classData = await Class.findOne({ name: application.applyingClass });
 
     if (classData) {
       let defaultFees = {};
       if (classData.defaultFees) {
         defaultFees = { ...classData.defaultFees };
       }
-      if (classData.sections && classData.sections.length > 0 && classData.sections[0].defaultFees) {
-        defaultFees = { ...defaultFees, ...classData.sections[0].defaultFees };
+
+      const sectionData = await Section.findOne({ classId: classData._id, name: section });
+      if (sectionData && sectionData.defaultFees) {
+        defaultFees = { ...defaultFees, ...sectionData.defaultFees };
       }
 
       const feeEntries = Object.entries(defaultFees);
       if (feeEntries.length > 0) {
-        await prisma.studentFee.createMany({
-          data: feeEntries.map(([feeCategoryId, amount]) => ({
-            studentId: newStudent.id,
+        await StudentFee.insertMany(
+          feeEntries.map(([feeCategoryId, amount]) => ({
+            studentId: newStudent._id,
             feeCategoryId,
             totalAmount: amount,
             remainingAmount: amount
           }))
-        });
+        );
       }
     }
 
-    await prisma.activityLog.create({
-      data: {
-        userId: req.user.id,
-        action: 'APPROVED_APPLICATION',
-        details: `Application ${application.applicationId} approved. Student ${admissionNumber} created.`
-      }
+    await ActivityLog.create({
+      userId: req.user.id,
+      action: 'APPROVED_APPLICATION',
+      details: `Application ${application.applicationId} approved. Student ${admissionNumber} created.`
     });
 
     res.json({ message: 'Application approved successfully', student: newStudent });
@@ -301,7 +271,7 @@ export const approveApplication = async (req, res) => {
 export const deleteApplication = async (req, res) => {
   try {
     const { id } = req.params;
-    await prisma.application.delete({ where: { id } });
+    await Application.findByIdAndDelete(id);
     res.json({ message: 'Application deleted successfully' });
   } catch (error) {
     res.status(500).json({ error: 'Error deleting application' });

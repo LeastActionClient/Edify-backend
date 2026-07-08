@@ -1,21 +1,32 @@
-import prisma from '../utils/prisma.js';
+import { Application, Student, ActivityLog, StudentFee, StudentIncludedCharge, StudentActivity, Payment, Invoice } from '../models/index.js';
 import fs from 'fs';
 import path from 'path';
 
 export const getStudents = async (req, res) => {
   try {
-    const students = await prisma.student.findMany({
-      orderBy: { createdAt: 'desc' },
-      include: {
-        addedBy: {
-          select: { username: true }
-        },
-        studentFees: {
-          include: { feeCategory: true }
-        }
-      }
+    const students = await Student.find()
+      .populate('addedById', 'username')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const studentIds = students.map(s => s._id);
+    const studentFees = await StudentFee.find({ studentId: { $in: studentIds } })
+      .populate('feeCategoryId')
+      .lean();
+
+    const feeMap = {};
+    studentFees.forEach(fee => {
+      const sid = fee.studentId.toString();
+      if (!feeMap[sid]) feeMap[sid] = [];
+      feeMap[sid].push(fee);
     });
-    res.json(students);
+
+    const result = students.map(s => ({
+      ...s,
+      studentFees: feeMap[s._id.toString()] || []
+    }));
+
+    res.json(result);
   } catch (error) {
     res.status(500).json({ error: 'Error fetching students' });
   }
@@ -24,33 +35,32 @@ export const getStudents = async (req, res) => {
 export const getStudentById = async (req, res) => {
   try {
     const { id } = req.params;
-    const student = await prisma.student.findUnique({
-      where: { id: id  },
-      include: {
-        addedBy: {
-          select: { username: true }
-        },
-        studentFees: {
-          include: { feeCategory: true }
-        },
-        payments: {
-          orderBy: { paymentDate: 'desc' }
-        },
-        includedCharges: {
-          include: { includedCharge: true }
-        },
-        activities: {
-          include: { activity: true }
-        }
-      }
-    });
+    const student = await Student.findById(id)
+      .populate('addedById', 'username')
+      .lean();
 
     if (!student) {
       res.status(404).json({ error: 'Student not found' });
       return;
     }
 
-    res.json(student);
+    const studentFees = await StudentFee.find({ studentId: id })
+      .populate('feeCategoryId')
+      .lean();
+
+    const payments = await Payment.find({ studentId: id })
+      .sort({ paymentDate: -1 })
+      .lean();
+
+    const includedCharges = await StudentIncludedCharge.find({ studentId: id })
+      .populate('includedChargeId')
+      .lean();
+
+    const activities = await StudentActivity.find({ studentId: id })
+      .populate('activityId')
+      .lean();
+
+    res.json({ ...student, studentFees, payments, includedCharges, activities });
   } catch (error) {
     res.status(500).json({ error: 'Error fetching student details' });
   }
@@ -58,14 +68,13 @@ export const getStudentById = async (req, res) => {
 
 const generateAdmissionNumber = async () => {
   const currentYear = new Date().getFullYear();
-  
+
   try {
     const settingsPath = path.join(process.cwd(), 'settings.json');
     if (fs.existsSync(settingsPath)) {
       const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
       if (settings.nextAdmissionNo) {
         const nextNo = settings.nextAdmissionNo;
-        // Auto increment for next time
         const parts = nextNo.split('-');
         if (parts.length >= 2) {
           const lastNumStr = parts[parts.length - 1];
@@ -82,14 +91,9 @@ const generateAdmissionNumber = async () => {
     }
   } catch(e) {}
 
-  const latestStudent = await prisma.student.findFirst({
-    orderBy: { createdAt: 'desc' }
-  });
+  const latestStudent = await Student.findOne().sort({ createdAt: -1 });
 
-  const latestApp = await prisma.application.findFirst({
-    where: { adminNo: { not: null } },
-    orderBy: { createdAt: 'desc' }
-  });
+  const latestApp = await Application.findOne({ adminNo: { $ne: null } }).sort({ createdAt: -1 });
 
   let latestRecord = null;
   let numberStr = null;
@@ -116,7 +120,7 @@ const generateAdmissionNumber = async () => {
   if (parts.length >= 2) {
     const lastNumStr = parts[parts.length - 1];
     const lastNum = parseInt(lastNumStr, 10);
-    
+
     if (!isNaN(lastNum)) {
       const prefix = parts.slice(0, parts.length - 1).join('-');
       const paddingLength = lastNumStr.length > 0 ? lastNumStr.length : 4;
@@ -138,28 +142,24 @@ export const addStudentManually = async (req, res) => {
 
     const admissionNumber = reqAdmissionNumber || await generateAdmissionNumber();
 
-    const student = await prisma.student.create({
-      data: {
-        admissionNumber,
-        studentName,
-        fatherName: fatherName || '',
-        motherName: motherName || '',
-        fatherPhone: fatherPhone || '',
-        motherPhone: motherPhone || '',
-        address: address || '',
-        currentClass,
-        section,
-        addedById: req.user?.id
-      }
+    const student = await Student.create({
+      admissionNumber,
+      studentName,
+      fatherName: fatherName || '',
+      motherName: motherName || '',
+      fatherPhone: fatherPhone || '',
+      motherPhone: motherPhone || '',
+      address: address || '',
+      currentClass,
+      section,
+      addedById: req.user?.id
     });
 
     if (req.user) {
-      await prisma.activityLog.create({
-        data: {
-          userId: req.user.id,
-          action: 'CREATED_STUDENT_MANUALLY',
-          details: `Student ${admissionNumber} created manually for class ${currentClass}`
-        }
+      await ActivityLog.create({
+        userId: req.user.id,
+        action: 'CREATED_STUDENT_MANUALLY',
+        details: `Student ${admissionNumber} created manually for class ${currentClass}`
       });
     }
 
@@ -189,8 +189,7 @@ export const bulkImportStudents = async (req, res) => {
     const workbook = xlsx.read(req.file.buffer, { type: 'buffer', cellDates: true });
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
-    
-    // Parse the sheet to JSON
+
     const data = xlsx.utils.sheet_to_json(sheet);
 
     if (data.length === 0) {
@@ -201,11 +200,10 @@ export const bulkImportStudents = async (req, res) => {
     let successCount = 0;
     const errors = [];
 
-    // Process each row
     for (let i = 0; i < data.length; i++) {
       const row = data[i];
       const studentName = row['Student Name'] || row['Name'] || row['studentName'];
-      
+
       if (!studentName) {
         errors.push(`Row ${i + 2}: Student Name is missing.`);
         continue;
@@ -214,36 +212,34 @@ export const bulkImportStudents = async (req, res) => {
       const admissionNumber = row['Admission No'] || row['admissionNumber'] || await generateAdmissionNumber();
 
       try {
-        await prisma.student.create({
-          data: {
-            admissionNumber: String(admissionNumber),
-            studentName: String(studentName),
-            fatherName: String(row['Father Name'] || row['fatherName'] || ''),
-            motherName: String(row['Mother Name'] || row['motherName'] || ''),
-            fatherPhone: String(row['Father Phone'] || row['fatherPhone'] || ''),
-            motherPhone: String(row['Mother Phone'] || row['motherPhone'] || ''),
-            address: String(row['Address'] || row['address'] || ''),
-            gender: String(row['Gender'] || row['Sex'] || row['gender'] || ''),
-            bloodGroup: String(row['Blood Group'] || row['bloodGroup'] || ''),
-            aadhaarNumber: String(row['Aadhar No'] || row['Aadhaar Number'] || row['aadhaarNumber'] || ''),
-            religion: String(row['Religion'] || row['religion'] || ''),
-            community: String(row['Community'] || row['Caste'] || row['community'] || ''),
-            nationality: String(row['Nationality'] || row['nationality'] || ''),
-            fatherOccupation: String(row['Father Occupation'] || row['fatherOccupation'] || ''),
-            motherOccupation: String(row['Mother Occupation'] || row['motherOccupation'] || ''),
-            guardian: String(row['Guardian Name'] || row['guardian'] || ''),
-            city: String(row['City'] || row['city'] || ''),
-            state: String(row['State'] || row['state'] || ''),
-            pincode: String(row['Pincode'] || row['pincode'] || ''),
-            dateOfBirth: (row['Date of Birth'] || row['DOB']) ? new Date(row['Date of Birth'] || row['DOB']) : null,
-            currentClass,
-            section: section || null,
-            addedById: req.user?.id
-          }
+        await Student.create({
+          admissionNumber: String(admissionNumber),
+          studentName: String(studentName),
+          fatherName: String(row['Father Name'] || row['fatherName'] || ''),
+          motherName: String(row['Mother Name'] || row['motherName'] || ''),
+          fatherPhone: String(row['Father Phone'] || row['fatherPhone'] || ''),
+          motherPhone: String(row['Mother Phone'] || row['motherPhone'] || ''),
+          address: String(row['Address'] || row['address'] || ''),
+          gender: String(row['Gender'] || row['Sex'] || row['gender'] || ''),
+          bloodGroup: String(row['Blood Group'] || row['bloodGroup'] || ''),
+          aadhaarNumber: String(row['Aadhar No'] || row['Aadhaar Number'] || row['aadhaarNumber'] || ''),
+          religion: String(row['Religion'] || row['religion'] || ''),
+          community: String(row['Community'] || row['Caste'] || row['community'] || ''),
+          nationality: String(row['Nationality'] || row['nationality'] || ''),
+          fatherOccupation: String(row['Father Occupation'] || row['fatherOccupation'] || ''),
+          motherOccupation: String(row['Mother Occupation'] || row['motherOccupation'] || ''),
+          guardian: String(row['Guardian Name'] || row['guardian'] || ''),
+          city: String(row['City'] || row['city'] || ''),
+          state: String(row['State'] || row['state'] || ''),
+          pincode: String(row['Pincode'] || row['pincode'] || ''),
+          dateOfBirth: (row['Date of Birth'] || row['DOB']) ? new Date(row['Date of Birth'] || row['DOB']) : null,
+          currentClass,
+          section: section || null,
+          addedById: req.user?.id
         });
         successCount++;
       } catch (err) {
-        if (err.code === 'P2002') {
+        if (err.code === 11000) {
           errors.push(`Row ${i + 2}: Admission Number ${admissionNumber} already exists.`);
         } else {
           errors.push(`Row ${i + 2}: Error saving to DB.`);
@@ -252,12 +248,10 @@ export const bulkImportStudents = async (req, res) => {
     }
 
     if (req.user && successCount > 0) {
-      await prisma.activityLog.create({
-        data: {
-          userId: req.user.id,
-          action: 'BULK_IMPORT_STUDENTS',
-          details: `Imported ${successCount} students into class ${currentClass}`
-        }
+      await ActivityLog.create({
+        userId: req.user.id,
+        action: 'BULK_IMPORT_STUDENTS',
+        details: `Imported ${successCount} students into class ${currentClass}`
       });
     }
 
@@ -275,20 +269,16 @@ export const bulkImportStudents = async (req, res) => {
 export const deleteStudent = async (req, res) => {
   try {
     const { id } = req.params;
-    
-    await prisma.$transaction(async (tx) => {
-      await tx.invoice.deleteMany({ where: { studentId: id } });
-      await tx.payment.deleteMany({ where: { studentId: id } });
-      await tx.studentFee.deleteMany({ where: { studentId: id } });
-      await tx.student.delete({ where: { id } });
-    });
-    
-    await prisma.activityLog.create({
-      data: {
-        userId: req.user.id,
-        action: 'DELETED_STUDENT',
-        details: `Deleted student ${id} and all associated records`
-      }
+
+    await Invoice.deleteMany({ studentId: id });
+    await Payment.deleteMany({ studentId: id });
+    await StudentFee.deleteMany({ studentId: id });
+    await Student.findByIdAndDelete(id);
+
+    await ActivityLog.create({
+      userId: req.user.id,
+      action: 'DELETED_STUDENT',
+      details: `Deleted student ${id} and all associated records`
     });
 
     res.json({ message: 'Student deleted successfully' });
@@ -301,11 +291,8 @@ export const deleteStudent = async (req, res) => {
 export const removeFeeFromStudent = async (req, res) => {
   try {
     const { studentId, feeId } = req.params;
-    
-    // Ensure the fee belongs to the student and has no payments against it yet
-    const fee = await prisma.studentFee.findFirst({
-      where: { id: feeId, studentId: studentId }
-    });
+
+    const fee = await StudentFee.findOne({ _id: feeId, studentId });
 
     if (!fee) {
       return res.status(404).json({ error: 'Fee assignment not found' });
@@ -314,9 +301,8 @@ export const removeFeeFromStudent = async (req, res) => {
     if (fee.paidAmount > 0) {
       return res.status(400).json({ error: 'Cannot delete a fee that has already been partially or fully paid' });
     }
-    await prisma.studentFee.delete({
-      where: { id: feeId }
-    });
+
+    await StudentFee.findByIdAndDelete(feeId);
 
     res.json({ message: 'Fee assignment removed successfully' });
   } catch (error) {
@@ -337,60 +323,48 @@ export const updateStudent = async (req, res) => {
       includedChargesIds, activitiesIds
     } = req.body;
 
-    const student = await prisma.$transaction(async (tx) => {
-      // 1. Update basic fields
-      const updatedStudent = await tx.student.update({
-        where: { id },
-        data: {
-          studentName, fatherName, motherName, fatherPhone, motherPhone, address, currentClass, section,
-          admissionNumber, gender, bloodGroup, aadhaarNumber, religion, community,
-          nationality, email, rollNumber, academicYear, studentStatus,
-          fatherOccupation, motherOccupation, guardian, city, state, pincode, photoUrl,
-          dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
-          admissionDate: admissionDate ? new Date(admissionDate) : null,
-          baseFee: baseFee ? parseFloat(baseFee) : null,
-          includedChargesTotal: includedChargesTotal ? parseFloat(includedChargesTotal) : null,
-          activitiesTotal: activitiesTotal ? parseFloat(activitiesTotal) : null,
-          grandTotal: grandTotal ? parseFloat(grandTotal) : null,
-        }
-      });
+    const student = await Student.findByIdAndUpdate(id, {
+      studentName, fatherName, motherName, fatherPhone, motherPhone, address, currentClass, section,
+      admissionNumber, gender, bloodGroup, aadhaarNumber, religion, community,
+      nationality, email, rollNumber, academicYear, studentStatus,
+      fatherOccupation, motherOccupation, guardian, city, state, pincode, photoUrl,
+      dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
+      admissionDate: admissionDate ? new Date(admissionDate) : null,
+      baseFee: baseFee ? parseFloat(baseFee) : null,
+      includedChargesTotal: includedChargesTotal ? parseFloat(includedChargesTotal) : null,
+      activitiesTotal: activitiesTotal ? parseFloat(activitiesTotal) : null,
+      grandTotal: grandTotal ? parseFloat(grandTotal) : null,
+    }, { new: true });
 
-      // 2. Sync Included Charges
-      if (Array.isArray(includedChargesIds)) {
-        await tx.studentIncludedCharge.deleteMany({ where: { studentId: id } });
-        if (includedChargesIds.length > 0) {
-          await tx.studentIncludedCharge.createMany({
-            data: includedChargesIds.map(chargeId => ({
-              studentId: id,
-              includedChargeId: chargeId
-            }))
-          });
-        }
+    if (Array.isArray(includedChargesIds)) {
+      await StudentIncludedCharge.deleteMany({ studentId: id });
+      if (includedChargesIds.length > 0) {
+        await StudentIncludedCharge.insertMany(
+          includedChargesIds.map(chargeId => ({
+            studentId: id,
+            includedChargeId: chargeId
+          }))
+        );
       }
+    }
 
-      // 3. Sync Activities
-      if (Array.isArray(activitiesIds)) {
-        await tx.studentActivity.deleteMany({ where: { studentId: id } });
-        if (activitiesIds.length > 0) {
-          await tx.studentActivity.createMany({
-            data: activitiesIds.map(activityId => ({
-              studentId: id,
-              activityId: activityId
-            }))
-          });
-        }
+    if (Array.isArray(activitiesIds)) {
+      await StudentActivity.deleteMany({ studentId: id });
+      if (activitiesIds.length > 0) {
+        await StudentActivity.insertMany(
+          activitiesIds.map(activityId => ({
+            studentId: id,
+            activityId: activityId
+          }))
+        );
       }
-
-      return updatedStudent;
-    });
+    }
 
     if (req.user) {
-      await prisma.activityLog.create({
-        data: {
-          userId: req.user.id,
-          action: 'UPDATED_STUDENT',
-          details: `Updated full details for student ${id}`
-        }
+      await ActivityLog.create({
+        userId: req.user.id,
+        action: 'UPDATED_STUDENT',
+        details: `Updated full details for student ${id}`
       });
     }
 
