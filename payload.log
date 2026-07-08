@@ -1,0 +1,18 @@
+{
+  "className": "12",
+  "sectionName": "A",
+  "fees": [
+    {
+      "feeCategoryId": "0a328c84-f71c-47cb-8a3d-59a800ebc741",
+      "amount": "2000"
+    },
+    {
+      "feeCategoryId": "83587ff6-3c46-42f2-a62e-3c57fe1a4a66",
+      "amount": "2000"
+    },
+    {
+      "feeCategoryId": "f04a5032-5b69-4706-826e-865ccd087776",
+      "amount": "4000"
+    }
+  ]
+}
