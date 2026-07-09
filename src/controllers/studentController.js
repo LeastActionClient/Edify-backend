@@ -1,4 +1,4 @@
-import { Application, Student, ActivityLog, StudentFee, StudentIncludedCharge, StudentActivity, Payment, Invoice, FeeCategory } from '../models/index.js';
+import { Application, Student, ActivityLog, StudentFee, StudentIncludedCharge, StudentActivity, Payment, Invoice, FeeCategory, Class } from '../models/index.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -626,31 +626,6 @@ export const promoteStudents = async (req, res) => {
         student.currentClass = nextClass;
         student.academicYear = toAcademicYear;
         await student.save();
-
-        // 4. Create new fee records for the new class from class defaultFees
-        const classDoc = await Class.findOne({ name: nextClass });
-        if (classDoc && classDoc.defaultFees && typeof classDoc.defaultFees === 'object') {
-          const defaultFeeEntries = Object.entries(classDoc.defaultFees);
-          for (const [feeCategoryId, amount] of defaultFeeEntries) {
-            if (amount > 0) {
-              const existingNewFee = await StudentFee.findOne({
-                studentId: student._id,
-                feeCategoryId,
-                className: nextClass
-              });
-              if (!existingNewFee) {
-                await StudentFee.create({
-                  studentId: student._id,
-                  feeCategoryId,
-                  totalAmount: amount,
-                  remainingAmount: amount,
-                  className: nextClass,
-                  academicYear: toAcademicYear
-                });
-              }
-            }
-          }
-        }
 
         promotedCount++;
       }

@@ -57,7 +57,7 @@ export const assignFeeToStudent = async (req, res) => {
       return res.status(404).json({ error: 'Student not found' });
     }
 
-    const existingFees = await StudentFee.find({ studentId, feeCategoryId });
+    const existingFees = await StudentFee.find({ studentId, feeCategoryId, className: student.currentClass });
 
     if (parseFloat(totalAmount) <= 0) {
       if (existingFees.length > 0) {
@@ -177,11 +177,13 @@ export const assignBulkFee = async (req, res) => {
 
     const bulkOperations = studentFeesData.map(data => ({
       updateOne: {
-        filter: { studentId: data.studentId, feeCategoryId: data.feeCategoryId },
+        filter: { studentId: data.studentId, feeCategoryId: data.feeCategoryId, className: data.className },
         update: {
           $set: {
             totalAmount: data.totalAmount,
-            remainingAmount: data.remainingAmount
+            remainingAmount: data.remainingAmount,
+            className: data.className,
+            academicYear: data.academicYear
           }
         },
         upsert: true
