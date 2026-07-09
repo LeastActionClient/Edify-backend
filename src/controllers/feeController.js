@@ -54,6 +54,18 @@ export const assignFeeToStudent = async (req, res) => {
 
     let studentFee = await StudentFee.findOne({ studentId, feeCategoryId });
 
+    if (parseFloat(totalAmount) <= 0) {
+      if (studentFee) {
+        if (studentFee.paidAmount > 0) {
+          return res.status(400).json({ error: 'Cannot remove fee that has partial payments.' });
+        }
+        await StudentFee.findByIdAndDelete(studentFee._id);
+        return res.status(200).json({ message: 'Fee removed successfully' });
+      } else {
+        return res.status(200).json({ message: 'No fee to remove' });
+      }
+    }
+
     if (studentFee) {
       studentFee = await StudentFee.findByIdAndUpdate(
         studentFee._id,
@@ -146,7 +158,20 @@ export const assignBulkFee = async (req, res) => {
       return;
     }
 
-    await StudentFee.insertMany(studentFeesData);
+    const bulkOperations = studentFeesData.map(data => ({
+      updateOne: {
+        filter: { studentId: data.studentId, feeCategoryId: data.feeCategoryId },
+        update: {
+          $set: {
+            totalAmount: data.totalAmount,
+            remainingAmount: data.remainingAmount
+          }
+        },
+        upsert: true
+      }
+    }));
+
+    await StudentFee.bulkWrite(bulkOperations);
 
     res.status(201).json({ message: `Assigned to class successfully` });
   } catch (error) {
