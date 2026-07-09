@@ -374,15 +374,21 @@ export const updateStudent = async (req, res) => {
       admissionNumber, dateOfBirth, gender, bloodGroup, aadhaarNumber, religion, community,
       nationality, email, rollNumber, admissionDate, academicYear, studentStatus,
       fatherOccupation, motherOccupation, guardian, city, state, pincode, photoUrl,
+      rcc, isRcc,
       baseFee, includedChargesTotal, activitiesTotal, grandTotal,
       includedChargesIds, activitiesIds
     } = req.body;
+
+    const resolvedRcc = typeof isRcc === 'boolean'
+      ? (isRcc ? 'RCC' : 'General')
+      : (rcc || '');
 
     const student = await Student.findByIdAndUpdate(id, {
       studentName, fatherName, motherName, fatherPhone, motherPhone, address, currentClass, section,
       admissionNumber, gender, bloodGroup, aadhaarNumber, religion, community,
       nationality, email, rollNumber, academicYear, studentStatus,
       fatherOccupation, motherOccupation, guardian, city, state, pincode, photoUrl,
+      rcc: resolvedRcc,
       dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
       admissionDate: admissionDate ? new Date(admissionDate) : null,
       baseFee: baseFee ? parseFloat(baseFee) : null,
