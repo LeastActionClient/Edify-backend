@@ -202,6 +202,15 @@ export const generateInvoicePDF = async (req, res) => {
       return;
     }
 
+    let fullTotalAmount = 0;
+    let fullRemainingBalance = 0;
+    
+    if (payment.isFullPayment) {
+      const allFees = await StudentFee.find({ studentId: payment.studentId._id });
+      fullTotalAmount = allFees.reduce((sum, f) => sum + f.totalAmount, 0);
+      fullRemainingBalance = allFees.reduce((sum, f) => sum + f.remainingAmount, 0);
+    }
+
     const doc = new PDFDocument({ margin: 30, size: 'A5', layout: 'landscape' });
 
     res.setHeader('Content-Type', 'application/pdf');
@@ -278,9 +287,9 @@ export const generateInvoicePDF = async (req, res) => {
     doc.fillColor('#000000').font('Helvetica');
     if (payment.isFullPayment) {
       doc.text('Consolidated Full Fees', 50, rowTop + 8);
-      doc.text(`Rs. ${payment.amount.toFixed(2)}`, 240, rowTop + 8);
+      doc.text(`Rs. ${fullTotalAmount.toFixed(2)}`, 240, rowTop + 8);
       doc.text(`Rs. ${payment.amount.toFixed(2)}`, 340, rowTop + 8);
-      doc.text(`Rs. 0.00`, 460, rowTop + 8);
+      doc.text(`Rs. ${fullRemainingBalance.toFixed(2)}`, 460, rowTop + 8);
     } else if (payment.studentFeeId) {
       doc.text(payment.studentFeeId.feeCategoryId?.name || 'Fee', 50, rowTop + 8);
       doc.text(`Rs. ${payment.studentFeeId.totalAmount.toFixed(2)}`, 240, rowTop + 8);
@@ -299,7 +308,7 @@ export const generateInvoicePDF = async (req, res) => {
 
     doc.font('Helvetica').text('Remaining Balance:', 340, summaryTop + 45);
     if (payment.isFullPayment) {
-      doc.font('Helvetica').text(`Rs. 0.00`, 460, summaryTop + 45);
+      doc.font('Helvetica').text(`Rs. ${fullRemainingBalance.toFixed(2)}`, 460, summaryTop + 45);
     } else if (payment.studentFeeId) {
       doc.font('Helvetica').text(`Rs. ${payment.studentFeeId.remainingAmount.toFixed(2)}`, 460, summaryTop + 45);
     }
