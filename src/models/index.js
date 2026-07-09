@@ -10,6 +10,7 @@ export { default as Payment } from './Payment.js';
 export { default as Invoice } from './Invoice.js';
 export { default as Settings } from './Settings.js';
 export { default as IncludedCharge } from './IncludedCharge.js';
+export { default as IncludedChargeStockTransaction } from './IncludedChargeStockTransaction.js';
 export { default as Activity } from './Activity.js';
 export { default as StudentIncludedCharge } from './StudentIncludedCharge.js';
 export { default as StudentActivity } from './StudentActivity.js';

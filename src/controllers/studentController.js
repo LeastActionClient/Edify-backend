@@ -1,4 +1,4 @@
-import { Application, Student, ActivityLog, StudentFee, StudentIncludedCharge, StudentActivity, Payment, Invoice, FeeCategory, Class } from '../models/index.js';
+import { Application, Student, ActivityLog, StudentFee, StudentIncludedCharge, StudentActivity, Payment, Invoice, FeeCategory, Class, IncludedCharge, IncludedChargeStockTransaction } from '../models/index.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -156,6 +156,60 @@ const generateAdmissionNumber = async () => {
   return `ADM-${currentYear}-0001`;
 };
 
+const clampNonNegative = (value) => Math.max(0, Number(value) || 0);
+
+const recordIncludedChargeStock = async ({
+  includedChargeId,
+  type,
+  quantity,
+  previousStock,
+  newStock,
+  reason,
+  referenceType,
+  referenceId,
+  performedById
+}) => {
+  await IncludedChargeStockTransaction.create({
+    includedChargeId,
+    type,
+    quantity,
+    previousStock,
+    newStock,
+    reason,
+    referenceType,
+    referenceId,
+    performedById
+  });
+};
+
+const adjustIncludedChargeStock = async (chargeId, delta, meta = {}) => {
+  const charge = await IncludedCharge.findById(chargeId);
+  if (!charge) return null;
+
+  const previousStock = clampNonNegative(charge.stockQuantity);
+  const nextStock = previousStock + delta;
+  if (nextStock < 0) {
+    throw new Error(`Not enough stock for included charge ${charge.name}`);
+  }
+
+  charge.stockQuantity = nextStock;
+  await charge.save();
+
+  await recordIncludedChargeStock({
+    includedChargeId: charge._id,
+    type: delta >= 0 ? 'RETURN' : 'OUT',
+    quantity: Math.abs(delta),
+    previousStock,
+    newStock: nextStock,
+    performedById: meta.performedById,
+    reason: meta.reason,
+    referenceType: meta.referenceType,
+    referenceId: meta.referenceId
+  });
+
+  return charge;
+};
+
 export const addStudentManually = async (req, res) => {
   try {
     const { 
@@ -201,6 +255,24 @@ export const addStudentManually = async (req, res) => {
       section,
       addedById: req.user?.id
     });
+
+    if (Array.isArray(req.body.includedChargesIds) && req.body.includedChargesIds.length > 0) {
+      await StudentIncludedCharge.insertMany(
+        req.body.includedChargesIds.map(chargeId => ({
+          studentId: student._id,
+          includedChargeId: chargeId
+        }))
+      );
+
+      for (const chargeId of req.body.includedChargesIds) {
+        await adjustIncludedChargeStock(chargeId, -1, {
+          performedById: req.user?.id,
+          reason: `Assigned to student ${admissionNumber}`,
+          referenceType: 'Student',
+          referenceId: student._id
+        });
+      }
+    }
 
     if (req.user) {
       await ActivityLog.create({
@@ -344,9 +416,20 @@ export const deleteStudent = async (req, res) => {
   try {
     const { id } = req.params;
 
+    const includedAssignments = await StudentIncludedCharge.find({ studentId: id });
+    for (const assignment of includedAssignments) {
+      await adjustIncludedChargeStock(assignment.includedChargeId, 1, {
+        performedById: req.user?.id,
+        reason: `Student ${id} deleted`,
+        referenceType: 'Student',
+        referenceId: id
+      });
+    }
+
     await Invoice.deleteMany({ studentId: id });
     await Payment.deleteMany({ studentId: id });
     await StudentFee.deleteMany({ studentId: id });
+    await StudentIncludedCharge.deleteMany({ studentId: id });
     await Student.findByIdAndDelete(id);
 
     await ActivityLog.create({
@@ -402,6 +485,19 @@ export const updateStudent = async (req, res) => {
       ? (isRcc ? 'RCC' : 'General')
       : (rcc || '');
 
+    const currentStudent = await Student.findById(id);
+    const previousIncludedAssignments = await StudentIncludedCharge.find({ studentId: id });
+    const previousIncludedChargeIds = previousIncludedAssignments
+      .map(item => item.includedChargeId?.toString())
+      .filter(Boolean);
+    const nextIncludedChargeIds = Array.isArray(includedChargesIds)
+      ? [...new Set(includedChargesIds.map(id => id?.toString()).filter(Boolean))]
+      : null;
+    const previousSet = new Set(previousIncludedChargeIds);
+    const nextSet = nextIncludedChargeIds ? new Set(nextIncludedChargeIds) : null;
+    const removedChargeIds = nextSet ? previousIncludedChargeIds.filter(chargeId => !nextSet.has(chargeId)) : [];
+    const addedChargeIds = nextSet ? nextIncludedChargeIds.filter(chargeId => !previousSet.has(chargeId)) : [];
+
     const student = await Student.findByIdAndUpdate(id, {
       studentName, fatherName, motherName, fatherPhone, motherPhone, address, currentClass, section,
       admissionNumber, gender, bloodGroup, aadhaarNumber, religion, community,
@@ -416,15 +512,45 @@ export const updateStudent = async (req, res) => {
       grandTotal: grandTotal ? parseFloat(grandTotal) : null,
     }, { new: true });
 
-    if (Array.isArray(includedChargesIds)) {
+    if (nextIncludedChargeIds !== null) {
+      const chargeDocs = await IncludedCharge.find({ _id: { $in: nextIncludedChargeIds } });
+      const chargeMap = new Map(chargeDocs.map(charge => [charge._id.toString(), charge]));
+      for (const chargeId of addedChargeIds) {
+        const charge = chargeMap.get(chargeId);
+        if (!charge) {
+          return res.status(404).json({ error: 'One of the included charges was not found' });
+        }
+        if (clampNonNegative(charge.stockQuantity) <= 0) {
+          return res.status(400).json({ error: `Not enough stock for ${charge.name}` });
+        }
+      }
+
       await StudentIncludedCharge.deleteMany({ studentId: id });
-      if (includedChargesIds.length > 0) {
+      if (nextIncludedChargeIds.length > 0) {
         await StudentIncludedCharge.insertMany(
-          includedChargesIds.map(chargeId => ({
+          nextIncludedChargeIds.map(chargeId => ({
             studentId: id,
             includedChargeId: chargeId
           }))
         );
+      }
+
+      for (const chargeId of removedChargeIds) {
+        await adjustIncludedChargeStock(chargeId, 1, {
+          performedById: req.user?.id,
+          reason: `Removed from student ${student?.admissionNumber || id}`,
+          referenceType: 'Student',
+          referenceId: student?._id || id
+        });
+      }
+
+      for (const chargeId of addedChargeIds) {
+        await adjustIncludedChargeStock(chargeId, -1, {
+          performedById: req.user?.id,
+          reason: `Assigned to student ${student?.admissionNumber || id}`,
+          referenceType: 'Student',
+          referenceId: student?._id || id
+        });
       }
     }
 
