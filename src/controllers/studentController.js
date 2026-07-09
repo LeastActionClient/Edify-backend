@@ -150,7 +150,7 @@ export const addStudentManually = async (req, res) => {
     const { 
       studentName, fatherName, motherName, fatherPhone, motherPhone, address, 
       currentClass, section, admissionNumber: reqAdmissionNumber,
-      dateOfBirth, gender, bloodGroup, aadhaarNumber, religion, community, caste, rcc, nationality,
+      dateOfBirth, gender, bloodGroup, aadhaarNumber, religion, community, caste, RTE, nationality,
       fatherOccupation, motherOccupation, guardian, city, state, pincode, whatsappNumber, emisNumber
     } = req.body;
 
@@ -181,7 +181,7 @@ export const addStudentManually = async (req, res) => {
       religion: religion || '',
       community: community || '',
       caste: caste || '',
-      rcc: rcc || '',
+      RTE: RTE || '',
       nationality: nationality || '',
       fatherOccupation: fatherOccupation || '',
       motherOccupation: motherOccupation || '',
@@ -290,7 +290,7 @@ export const bulkImportStudents = async (req, res) => {
           religion: String(row['Religion'] || row['religion'] || ''),
           community: String(row['Community'] || row['community'] || ''),
           caste: String(row['Caste'] || row['caste'] || ''),
-          rcc: String(row['RCC'] || row['rcc'] || ''),
+          RTE: String(row['RTE'] || row['RTE'] || ''),
           nationality: String(row['Nationality'] || row['nationality'] || ''),
           fatherOccupation: String(row['Father Occupation'] || row['fatherOccupation'] || ''),
           motherOccupation: String(row['Mother Occupation'] || row['motherOccupation'] || ''),
@@ -398,14 +398,14 @@ export const updateStudent = async (req, res) => {
       admissionNumber, dateOfBirth, gender, bloodGroup, aadhaarNumber, religion, community,
       nationality, email, rollNumber, admissionDate, academicYear, studentStatus,
       fatherOccupation, motherOccupation, guardian, city, state, pincode, photoUrl,
-      rcc, isRcc,
+      RTE, isRTE,
       baseFee, includedChargesTotal, activitiesTotal, grandTotal,
       includedChargesIds, activitiesIds
     } = req.body;
 
-    const resolvedRcc = typeof isRcc === 'boolean'
-      ? (isRcc ? 'RCC' : 'General')
-      : (rcc || '');
+    const resolvedRTE = typeof isRTE === 'boolean'
+      ? (isRTE ? 'RTE' : 'General')
+      : (RTE || '');
 
     const currentStudent = await Student.findById(id);
     const previousIncludedAssignments = await StudentIncludedCharge.find({ studentId: id });
@@ -425,7 +425,7 @@ export const updateStudent = async (req, res) => {
       admissionNumber, gender, bloodGroup, aadhaarNumber, religion, community,
       nationality, email, rollNumber, academicYear, studentStatus,
       fatherOccupation, motherOccupation, guardian, city, state, pincode, photoUrl,
-      rcc: resolvedRcc,
+      RTE: resolvedRTE,
       dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
       admissionDate: admissionDate ? new Date(admissionDate) : null,
       baseFee: baseFee ? parseFloat(baseFee) : null,
