@@ -57,21 +57,24 @@ export const assignFeeToStudent = async (req, res) => {
       return res.status(404).json({ error: 'Student not found' });
     }
 
-    let studentFee = await StudentFee.findOne({ studentId, feeCategoryId, className: student.currentClass });
+    const existingFees = await StudentFee.find({ studentId, feeCategoryId });
 
     if (parseFloat(totalAmount) <= 0) {
-      if (studentFee) {
-        if (studentFee.paidAmount > 0) {
-          return res.status(400).json({ error: 'Cannot remove fee that has partial payments.' });
+      if (existingFees.length > 0) {
+        for (const f of existingFees) {
+          if (f.paidAmount > 0) {
+            return res.status(400).json({ error: 'Cannot remove fee that has partial payments.' });
+          }
         }
-        await StudentFee.findByIdAndDelete(studentFee._id);
+        await StudentFee.deleteMany({ studentId, feeCategoryId });
         return res.status(200).json({ message: 'Fee removed successfully' });
       } else {
         return res.status(200).json({ message: 'No fee to remove' });
       }
     }
 
-    if (studentFee) {
+    if (existingFees.length > 0) {
+      let studentFee = existingFees[0];
       studentFee = await StudentFee.findByIdAndUpdate(
         studentFee._id,
         {
@@ -80,8 +83,14 @@ export const assignFeeToStudent = async (req, res) => {
         },
         { new: true }
       ).populate('feeCategoryId');
+      
+      if (existingFees.length > 1) {
+        const idsToDelete = existingFees.slice(1).map(f => f._id);
+        await StudentFee.deleteMany({ _id: { $in: idsToDelete } });
+      }
+      return res.status(201).json(studentFee);
     } else {
-      studentFee = await StudentFee.create({
+      let studentFee = await StudentFee.create({
         studentId,
         feeCategoryId,
         totalAmount: parseFloat(totalAmount),
@@ -90,9 +99,8 @@ export const assignFeeToStudent = async (req, res) => {
         academicYear: student.academicYear
       });
       studentFee = await StudentFee.findById(studentFee._id).populate('feeCategoryId');
+      return res.status(201).json(studentFee);
     }
-
-    res.status(201).json(studentFee);
   } catch (error) {
     res.status(500).json({ error: 'Error assigning fee to student' });
   }
