@@ -507,11 +507,20 @@ export const promoteStudents = async (req, res) => {
     }
 
     const students = await Student.find({
-      academicYear: fromAcademicYear,
       $or: [
-        { studentStatus: 'Active' },
-        { studentStatus: { $exists: false } },
-        { studentStatus: null }
+        { academicYear: fromAcademicYear },
+        { academicYear: { $exists: false } },
+        { academicYear: null },
+        { academicYear: '' }
+      ],
+      $and: [
+        {
+          $or: [
+            { studentStatus: 'Active' },
+            { studentStatus: { $exists: false } },
+            { studentStatus: null }
+          ]
+        }
       ]
     });
 
