@@ -1,4 +1,4 @@
-import { Application, Student, ActivityLog, StudentFee, StudentIncludedCharge, StudentActivity, Payment, Invoice } from '../models/index.js';
+import { Application, Student, ActivityLog, StudentFee, StudentIncludedCharge, StudentActivity, Payment, Invoice, FeeCategory } from '../models/index.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -16,6 +16,7 @@ export const getStudents = async (req, res) => {
 
     const feeMap = {};
     studentFees.forEach(fee => {
+      fee.feeCategory = fee.feeCategoryId; // Map populated field for frontend
       const sid = fee.studentId.toString();
       if (!feeMap[sid]) feeMap[sid] = [];
       feeMap[sid].push(fee);
@@ -44,9 +45,14 @@ export const getStudentById = async (req, res) => {
       return;
     }
 
-    const studentFees = await StudentFee.find({ studentId: id })
+    const studentFeesRaw = await StudentFee.find({ studentId: id })
       .populate('feeCategoryId')
       .lean();
+      
+    const studentFees = studentFeesRaw.map(fee => ({
+      ...fee,
+      feeCategory: fee.feeCategoryId
+    }));
 
     const payments = await Payment.find({ studentId: id })
       .sort({ paymentDate: -1 })
@@ -133,7 +139,12 @@ const generateAdmissionNumber = async () => {
 
 export const addStudentManually = async (req, res) => {
   try {
-    const { studentName, fatherName, motherName, fatherPhone, motherPhone, address, currentClass, section, admissionNumber: reqAdmissionNumber } = req.body;
+    const { 
+      studentName, fatherName, motherName, fatherPhone, motherPhone, address, 
+      currentClass, section, admissionNumber: reqAdmissionNumber,
+      dateOfBirth, gender, bloodGroup, aadhaarNumber, religion, community, caste, rcc, nationality,
+      fatherOccupation, motherOccupation, guardian, city, state, pincode, whatsappNumber, emisNumber
+    } = req.body;
 
     if (!studentName || !currentClass) {
       res.status(400).json({ error: 'Student Name and Class are required' });
@@ -150,6 +161,23 @@ export const addStudentManually = async (req, res) => {
       fatherPhone: fatherPhone || '',
       motherPhone: motherPhone || '',
       address: address || '',
+      dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
+      gender: gender || '',
+      bloodGroup: bloodGroup || '',
+      aadhaarNumber: aadhaarNumber || '',
+      religion: religion || '',
+      community: community || '',
+      caste: caste || '',
+      rcc: rcc || '',
+      nationality: nationality || '',
+      fatherOccupation: fatherOccupation || '',
+      motherOccupation: motherOccupation || '',
+      guardian: guardian || '',
+      city: city || '',
+      state: state || '',
+      pincode: pincode || '',
+      whatsappNumber: whatsappNumber || '',
+      emisNumber: emisNumber || '',
       currentClass,
       section,
       addedById: req.user?.id
@@ -199,6 +227,7 @@ export const bulkImportStudents = async (req, res) => {
 
     let successCount = 0;
     const errors = [];
+    let nextAdmNo = null;
 
     for (let i = 0; i < data.length; i++) {
       const row = data[i];
@@ -209,7 +238,29 @@ export const bulkImportStudents = async (req, res) => {
         continue;
       }
 
-      const admissionNumber = row['Admission No'] || row['admissionNumber'] || await generateAdmissionNumber();
+      let admissionNumber = row['Admission No'] || row['admissionNumber'];
+      
+      if (!admissionNumber) {
+        if (!nextAdmNo) {
+          nextAdmNo = await generateAdmissionNumber();
+        } else {
+          const parts = nextAdmNo.split('-');
+          if (parts.length >= 2) {
+            const lastNumStr = parts[parts.length - 1];
+            const lastNum = parseInt(lastNumStr, 10);
+            if (!isNaN(lastNum)) {
+              const prefix = parts.slice(0, parts.length - 1).join('-');
+              const paddingLength = lastNumStr.length > 0 ? lastNumStr.length : 4;
+              nextAdmNo = `${prefix}-${String(lastNum + 1).padStart(paddingLength, '0')}`;
+            } else {
+              nextAdmNo = await generateAdmissionNumber();
+            }
+          } else {
+            nextAdmNo = await generateAdmissionNumber();
+          }
+        }
+        admissionNumber = nextAdmNo;
+      }
 
       try {
         await Student.create({
@@ -224,7 +275,9 @@ export const bulkImportStudents = async (req, res) => {
           bloodGroup: String(row['Blood Group'] || row['bloodGroup'] || ''),
           aadhaarNumber: String(row['Aadhar No'] || row['Aadhaar Number'] || row['aadhaarNumber'] || ''),
           religion: String(row['Religion'] || row['religion'] || ''),
-          community: String(row['Community'] || row['Caste'] || row['community'] || ''),
+          community: String(row['Community'] || row['community'] || ''),
+          caste: String(row['Caste'] || row['caste'] || ''),
+          rcc: String(row['RCC'] || row['rcc'] || ''),
           nationality: String(row['Nationality'] || row['nationality'] || ''),
           fatherOccupation: String(row['Father Occupation'] || row['fatherOccupation'] || ''),
           motherOccupation: String(row['Mother Occupation'] || row['motherOccupation'] || ''),
@@ -233,6 +286,8 @@ export const bulkImportStudents = async (req, res) => {
           state: String(row['State'] || row['state'] || ''),
           pincode: String(row['Pincode'] || row['pincode'] || ''),
           dateOfBirth: (row['Date of Birth'] || row['DOB']) ? new Date(row['Date of Birth'] || row['DOB']) : null,
+          whatsappNumber: String(row['Whatsapp Number'] || row['whatsappNumber'] || row['Whatsapp No'] || ''),
+          emisNumber: String(row['EMIS No'] || row['emisNumber'] || row['EMIS Number'] || ''),
           currentClass,
           section: section || null,
           addedById: req.user?.id
@@ -360,6 +415,74 @@ export const updateStudent = async (req, res) => {
       }
     }
 
+    // SYNC TO STUDENT FEES FOR PAYMENTS PAGE
+    const syncSpecialFee = async (feeName, amount) => {
+      if (!amount || amount <= 0) {
+        let cat = await FeeCategory.findOne({ name: feeName });
+        if (cat) {
+          const existing = await StudentFee.findOne({ studentId: id, feeCategoryId: cat._id });
+          if (existing && existing.paidAmount === 0) {
+            await StudentFee.findByIdAndDelete(existing._id);
+          }
+        }
+        return;
+      }
+
+      let category = await FeeCategory.findOne({ name: feeName });
+      if (!category) {
+        category = await FeeCategory.create({ name: feeName, amount: 0, description: `System generated ${feeName}` });
+      }
+
+      const existingFee = await StudentFee.findOne({ studentId: id, feeCategoryId: category._id });
+      if (existingFee) {
+        existingFee.totalAmount = amount;
+        existingFee.remainingAmount = amount - existingFee.paidAmount;
+        await existingFee.save();
+      } else {
+        await StudentFee.create({
+          studentId: id,
+          feeCategoryId: category._id,
+          totalAmount: amount,
+          remainingAmount: amount
+        });
+      }
+    };
+
+    const syncBaseFee = async (amount) => {
+      const excludedNames = ['Included Charges', 'Activities'];
+      const excludedCategories = await FeeCategory.find({ name: { $in: excludedNames } });
+      const excludedIds = excludedCategories.map(c => c._id);
+
+      const standardFees = await StudentFee.find({
+        studentId: id,
+        feeCategoryId: { $nin: excludedIds }
+      });
+
+      const totalPaid = standardFees.reduce((sum, f) => sum + (f.paidAmount || 0), 0);
+      
+      // Wipe all existing standard fees to consolidate them
+      if (standardFees.length > 0) {
+        await StudentFee.deleteMany({ _id: { $in: standardFees.map(f => f._id) } });
+      }
+
+      // Create a single consolidated Base Fee matching the form exactly
+      if (amount > 0) {
+        let category = await FeeCategory.findOne({ name: 'Base Fee' });
+        if (!category) category = await FeeCategory.create({ name: 'Base Fee', amount: 0, description: 'System generated Base Fee' });
+        await StudentFee.create({ 
+          studentId: id, 
+          feeCategoryId: category._id, 
+          totalAmount: amount, 
+          paidAmount: totalPaid,
+          remainingAmount: Math.max(0, amount - totalPaid) 
+        });
+      }
+    };
+
+    await syncBaseFee(baseFee ? parseFloat(baseFee) : 0);
+    await syncSpecialFee('Included Charges', includedChargesTotal ? parseFloat(includedChargesTotal) : 0);
+    await syncSpecialFee('Activities', activitiesTotal ? parseFloat(activitiesTotal) : 0);
+
     if (req.user) {
       await ActivityLog.create({
         userId: req.user.id,
@@ -372,5 +495,57 @@ export const updateStudent = async (req, res) => {
   } catch (error) {
     console.error("Update student error:", error);
     res.status(500).json({ error: 'Error updating student details' });
+  }
+};
+
+export const promoteStudents = async (req, res) => {
+  try {
+    const { fromAcademicYear, toAcademicYear, classMapping } = req.body;
+
+    if (!fromAcademicYear || !toAcademicYear || !classMapping) {
+      return res.status(400).json({ error: 'fromAcademicYear, toAcademicYear, and classMapping are required.' });
+    }
+
+    const students = await Student.find({
+      academicYear: fromAcademicYear,
+      $or: [
+        { studentStatus: 'Active' },
+        { studentStatus: { $exists: false } },
+        { studentStatus: null }
+      ]
+    });
+
+    let promotedCount = 0;
+    let graduatedCount = 0;
+
+    for (const student of students) {
+      const nextClass = classMapping[student.currentClass];
+      
+      if (nextClass) {
+        if (nextClass === 'Graduated') {
+          student.studentStatus = 'Graduated';
+          graduatedCount++;
+        } else {
+          student.currentClass = nextClass;
+          student.academicYear = toAcademicYear;
+          promotedCount++;
+        }
+        await student.save();
+      }
+    }
+
+    if (req.user) {
+      await ActivityLog.create({
+        userId: req.user.id,
+        action: 'PROMOTED_STUDENTS',
+        details: `Promoted ${promotedCount} students and graduated ${graduatedCount} from ${fromAcademicYear} to ${toAcademicYear}`
+      });
+    }
+
+    res.json({ message: `Successfully promoted ${promotedCount} students and graduated ${graduatedCount} students.`, promotedCount, graduatedCount });
+
+  } catch (error) {
+    console.error('Error promoting students:', error);
+    res.status(500).json({ error: 'Failed to promote students' });
   }
 };

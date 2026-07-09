@@ -35,7 +35,11 @@ const studentSchema = new mongoose.Schema({
   baseFee: { type: Number },
   includedChargesTotal: { type: Number },
   activitiesTotal: { type: Number },
-  grandTotal: { type: Number }
+  grandTotal: { type: Number },
+  whatsappNumber: { type: String },
+  emisNumber: { type: String },
+  caste: { type: String },
+  rcc: { type: String }
 }, { timestamps: true });
 
 export default mongoose.model('Student', studentSchema);

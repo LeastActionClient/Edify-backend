@@ -18,6 +18,32 @@ export const getDailyCollection = async (req, res) => {
   }
 };
 
+export const getCustomCollection = async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    if (!startDate || !endDate) {
+      return res.status(400).json({ error: 'Start date and end date are required' });
+    }
+
+    const start = new Date(startDate);
+    start.setHours(0, 0, 0, 0);
+
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+
+    const payments = await Payment.find({ paymentDate: { $gte: start, $lte: end } })
+      .populate('studentId', 'studentName admissionNumber')
+      .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId' } })
+      .populate('recordedById', 'username');
+
+    const total = payments.reduce((sum, p) => sum + p.amount, 0);
+
+    res.json({ total, payments });
+  } catch (error) {
+    res.status(500).json({ error: 'Error fetching custom collection' });
+  }
+};
+
 export const getMonthlyCollection = async (req, res) => {
   try {
     const today = new Date();

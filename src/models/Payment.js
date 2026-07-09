@@ -2,7 +2,12 @@ import mongoose from 'mongoose';
 
 const paymentSchema = new mongoose.Schema({
   studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
-  studentFeeId: { type: mongoose.Schema.Types.ObjectId, ref: 'StudentFee', required: true },
+  studentFeeId: { type: mongoose.Schema.Types.ObjectId, ref: 'StudentFee' }, // Optional for full payments
+  isFullPayment: { type: Boolean, default: false },
+  feeAllocations: [{
+    studentFeeId: { type: mongoose.Schema.Types.ObjectId, ref: 'StudentFee' },
+    amount: Number
+  }],
   amount: { type: Number, required: true },
   paymentDate: { type: Date, default: Date.now },
   paymentMethod: { type: String, required: true },

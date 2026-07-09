@@ -4,7 +4,13 @@ import { User, ActivityLog } from '../models/index.js';
 
 export const login = async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const username = String(req.body?.username || '').trim();
+    const password = String(req.body?.password || '');
+
+    if (!username || !password) {
+      res.status(400).json({ error: 'Username and password are required' });
+      return;
+    }
 
     const user = await User.findOne({ username });
     if (!user || !user.isActive) {
@@ -24,10 +30,12 @@ export const login = async (req, res) => {
       { expiresIn: '1d' }
     );
 
-    await ActivityLog.create({
+    ActivityLog.create({
       userId: user.id,
       action: 'LOGGED_IN',
       details: `User ${user.username} logged in`
+    }).catch((error) => {
+      console.error('Failed to write login activity log', error);
     });
 
     res.json({
