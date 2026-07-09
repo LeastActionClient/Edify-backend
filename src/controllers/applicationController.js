@@ -46,76 +46,10 @@ const generateApplicationId = async () => {
   return `APP-${currentYear}-0001`;
 };
 
-const generateAdmissionNumber = async () => {
-  const currentYear = new Date().getFullYear();
-
-  try {
-    const settingsPath = path.join(process.cwd(), 'settings.json');
-    if (fs.existsSync(settingsPath)) {
-      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-      if (settings.nextAdmissionNo) {
-        const nextNo = settings.nextAdmissionNo;
-        const parts = nextNo.split('-');
-        if (parts.length >= 2) {
-          const lastNumStr = parts[parts.length - 1];
-          const lastNum = parseInt(lastNumStr, 10);
-          if (!isNaN(lastNum)) {
-            const prefix = parts.slice(0, parts.length - 1).join('-');
-            const paddingLength = lastNumStr.length > 0 ? lastNumStr.length : 4;
-            settings.nextAdmissionNo = `${prefix}-${String(lastNum + 1).padStart(paddingLength, '0')}`;
-            fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-          }
-        }
-        return nextNo;
-      }
-    }
-  } catch(e) {}
-
-  const latestStudent = await Student.findOne().sort({ createdAt: -1 });
-
-  const latestApp = await Application.findOne({ adminNo: { $ne: null } }).sort({ createdAt: -1 });
-
-  let latestRecord = null;
-  let numberStr = null;
-
-  if (latestStudent && latestApp) {
-    if (latestStudent.createdAt > latestApp.createdAt) {
-      latestRecord = latestStudent;
-      numberStr = latestStudent.admissionNumber;
-    } else {
-      latestRecord = latestApp;
-      numberStr = latestApp.adminNo;
-    }
-  } else if (latestStudent) {
-    latestRecord = latestStudent;
-    numberStr = latestStudent.admissionNumber;
-  } else if (latestApp) {
-    latestRecord = latestApp;
-    numberStr = latestApp.adminNo;
-  }
-
-  if (!latestRecord || !numberStr) return `ADM-${currentYear}-0001`;
-
-  const parts = numberStr.split('-');
-  if (parts.length >= 2) {
-    const lastNumStr = parts[parts.length - 1];
-    const lastNum = parseInt(lastNumStr, 10);
-
-    if (!isNaN(lastNum)) {
-      const prefix = parts.slice(0, parts.length - 1).join('-');
-      const paddingLength = lastNumStr.length > 0 ? lastNumStr.length : 4;
-      return `${prefix}-${String(lastNum + 1).padStart(paddingLength, '0')}`;
-    }
-  }
-
-  return `ADM-${currentYear}-0001`;
-};
-
 export const getNextNumbers = async (req, res) => {
   try {
     const nextAppId = await generateApplicationId();
-    const nextAdminId = await generateAdmissionNumber();
-    res.json({ applicationNo: nextAppId, adminNo: nextAdminId });
+    res.json({ applicationNo: nextAppId });
   } catch (error) {
     res.status(500).json({ error: 'Error generating numbers' });
   }
@@ -130,7 +64,7 @@ export const createApplication = async (req, res) => {
     } = req.body;
 
     const applicationId = applicationNo || await generateApplicationId();
-    const finalAdminNo = adminNo || await generateAdmissionNumber();
+    const finalAdminNo = adminNo;
 
     const application = await Application.create({
       applicationId,
@@ -208,7 +142,11 @@ export const approveApplication = async (req, res) => {
       return;
     }
 
-    const admissionNumber = application.adminNo || await generateAdmissionNumber();
+    if (!application.adminNo) {
+      res.status(400).json({ error: 'Admission Number is required. Edit the application to add one before approving.' });
+      return;
+    }
+    const admissionNumber = application.adminNo;
 
     const updatedApp = await Application.findByIdAndUpdate(
       id,

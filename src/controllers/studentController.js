@@ -1,6 +1,4 @@
-import { Application, Student, ActivityLog, StudentFee, StudentIncludedCharge, StudentActivity, Payment, Invoice, FeeCategory, Class, IncludedCharge, IncludedChargeStockTransaction } from '../models/index.js';
-import fs from 'fs';
-import path from 'path';
+import { Student, ActivityLog, StudentFee, StudentIncludedCharge, StudentActivity, Payment, Invoice, FeeCategory, Class, IncludedCharge, IncludedChargeStockTransaction } from '../models/index.js';
 
 export const getStudents = async (req, res) => {
   try {
@@ -91,70 +89,7 @@ export const getStudentById = async (req, res) => {
   }
 };
 
-const generateAdmissionNumber = async () => {
-  const currentYear = new Date().getFullYear();
 
-  try {
-    const settingsPath = path.join(process.cwd(), 'settings.json');
-    if (fs.existsSync(settingsPath)) {
-      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-      if (settings.nextAdmissionNo) {
-        const nextNo = settings.nextAdmissionNo;
-        const parts = nextNo.split('-');
-        if (parts.length >= 2) {
-          const lastNumStr = parts[parts.length - 1];
-          const lastNum = parseInt(lastNumStr, 10);
-          if (!isNaN(lastNum)) {
-            const prefix = parts.slice(0, parts.length - 1).join('-');
-            const paddingLength = lastNumStr.length > 0 ? lastNumStr.length : 4;
-            settings.nextAdmissionNo = `${prefix}-${String(lastNum + 1).padStart(paddingLength, '0')}`;
-            fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-          }
-        }
-        return nextNo;
-      }
-    }
-  } catch(e) {}
-
-  const latestStudent = await Student.findOne().sort({ createdAt: -1 });
-
-  const latestApp = await Application.findOne({ adminNo: { $ne: null } }).sort({ createdAt: -1 });
-
-  let latestRecord = null;
-  let numberStr = null;
-
-  if (latestStudent && latestApp) {
-    if (latestStudent.createdAt > latestApp.createdAt) {
-      latestRecord = latestStudent;
-      numberStr = latestStudent.admissionNumber;
-    } else {
-      latestRecord = latestApp;
-      numberStr = latestApp.adminNo;
-    }
-  } else if (latestStudent) {
-    latestRecord = latestStudent;
-    numberStr = latestStudent.admissionNumber;
-  } else if (latestApp) {
-    latestRecord = latestApp;
-    numberStr = latestApp.adminNo;
-  }
-
-  if (!latestRecord || !numberStr) return `ADM-${currentYear}-0001`;
-
-  const parts = numberStr.split('-');
-  if (parts.length >= 2) {
-    const lastNumStr = parts[parts.length - 1];
-    const lastNum = parseInt(lastNumStr, 10);
-
-    if (!isNaN(lastNum)) {
-      const prefix = parts.slice(0, parts.length - 1).join('-');
-      const paddingLength = lastNumStr.length > 0 ? lastNumStr.length : 4;
-      return `${prefix}-${String(lastNum + 1).padStart(paddingLength, '0')}`;
-    }
-  }
-
-  return `ADM-${currentYear}-0001`;
-};
 
 const clampNonNegative = (value) => Math.max(0, Number(value) || 0);
 
@@ -224,7 +159,12 @@ export const addStudentManually = async (req, res) => {
       return;
     }
 
-    const admissionNumber = reqAdmissionNumber || await generateAdmissionNumber();
+    if (!reqAdmissionNumber) {
+      res.status(400).json({ error: 'Admission Number is required' });
+      return;
+    }
+
+    const admissionNumber = reqAdmissionNumber;
 
     const student = await Student.create({
       admissionNumber,
@@ -318,7 +258,6 @@ export const bulkImportStudents = async (req, res) => {
 
     let successCount = 0;
     const errors = [];
-    let nextAdmNo = null;
 
     for (let i = 0; i < data.length; i++) {
       const row = data[i];
@@ -330,27 +269,10 @@ export const bulkImportStudents = async (req, res) => {
       }
 
       let admissionNumber = row['Admission No'] || row['admissionNumber'];
-      
+
       if (!admissionNumber) {
-        if (!nextAdmNo) {
-          nextAdmNo = await generateAdmissionNumber();
-        } else {
-          const parts = nextAdmNo.split('-');
-          if (parts.length >= 2) {
-            const lastNumStr = parts[parts.length - 1];
-            const lastNum = parseInt(lastNumStr, 10);
-            if (!isNaN(lastNum)) {
-              const prefix = parts.slice(0, parts.length - 1).join('-');
-              const paddingLength = lastNumStr.length > 0 ? lastNumStr.length : 4;
-              nextAdmNo = `${prefix}-${String(lastNum + 1).padStart(paddingLength, '0')}`;
-            } else {
-              nextAdmNo = await generateAdmissionNumber();
-            }
-          } else {
-            nextAdmNo = await generateAdmissionNumber();
-          }
-        }
-        admissionNumber = nextAdmNo;
+        errors.push(`Row ${i + 2}: Admission Number is missing.`);
+        continue;
       }
 
       try {
