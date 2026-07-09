@@ -52,7 +52,12 @@ export const assignFeeToStudent = async (req, res) => {
     const { studentId } = req.params;
     const { feeCategoryId, totalAmount } = req.body;
 
-    let studentFee = await StudentFee.findOne({ studentId, feeCategoryId });
+    const student = await Student.findById(studentId);
+    if (!student) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
+    let studentFee = await StudentFee.findOne({ studentId, feeCategoryId, className: student.currentClass });
 
     if (studentFee) {
       studentFee = await StudentFee.findByIdAndUpdate(
@@ -68,7 +73,9 @@ export const assignFeeToStudent = async (req, res) => {
         studentId,
         feeCategoryId,
         totalAmount: parseFloat(totalAmount),
-        remainingAmount: parseFloat(totalAmount)
+        remainingAmount: parseFloat(totalAmount),
+        className: student.currentClass,
+        academicYear: student.academicYear
       });
       studentFee = await StudentFee.findById(studentFee._id).populate('feeCategoryId');
     }
@@ -135,7 +142,9 @@ export const assignBulkFee = async (req, res) => {
             studentId: student._id,
             feeCategoryId: fee.feeCategoryId,
             totalAmount: parseFloat(fee.amount),
-            remainingAmount: parseFloat(fee.amount)
+            remainingAmount: parseFloat(fee.amount),
+            className: className,
+            academicYear: student.academicYear || null
           });
         }
       });
