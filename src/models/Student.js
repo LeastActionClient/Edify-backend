@@ -39,7 +39,7 @@ const studentSchema = new mongoose.Schema({
   whatsappNumber: { type: String },
   emisNumber: { type: String },
   caste: { type: String },
-  rcc: { type: String }
+  RTE: { type: String }
 }, { timestamps: true });
 
 export default mongoose.model('Student', studentSchema);
