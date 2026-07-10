@@ -1,4 +1,5 @@
-import { Student, ActivityLog, StudentFee, StudentIncludedCharge, StudentActivity, Payment, Invoice, FeeCategory, Class, IncludedCharge, IncludedChargeStockTransaction } from '../models/index.js';
+import { Student, ActivityLog, StudentFee, StudentIncludedCharge, StudentActivity, Payment, Invoice, FeeCategory, Class, IncludedCharge, IncludedChargeStockTransaction, Application } from '../models/index.js';
+import mongoose from 'mongoose';
 
 export const getStudents = async (req, res) => {
   try {
@@ -146,12 +147,16 @@ const adjustIncludedChargeStock = async (chargeId, delta, meta = {}) => {
 };
 
 export const addStudentManually = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
   try {
     const { 
       studentName, fatherName, motherName, fatherPhone, motherPhone, address, 
       currentClass, section, admissionNumber: reqAdmissionNumber,
       dateOfBirth, gender, bloodGroup, aadhaarNumber, religion, community, caste, RTE, nationality,
-      fatherOccupation, motherOccupation, guardian, city, state, pincode, whatsappNumber, emisNumber
+      fatherOccupation, motherOccupation, guardian, city, state, pincode, whatsappNumber, emisNumber,
+      applicationId
     } = req.body;
 
     if (!studentName || !currentClass) {
@@ -164,9 +169,24 @@ export const addStudentManually = async (req, res) => {
       return;
     }
 
+    let application = null;
+    if (applicationId) {
+      application = await Application.findById(applicationId).session(session);
+      if (!application) {
+        throw new Error('Application not found');
+      }
+      if (application.status === 'APPROVED') {
+        throw new Error('This application has already been approved and linked to a student.');
+      }
+      const normalize = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (normalize(application.applyingClass) !== normalize(currentClass)) {
+        throw new Error('Application class does not match selected class.');
+      }
+    }
+
     const admissionNumber = reqAdmissionNumber;
 
-    const student = await Student.create({
+    const student = await Student.create([{
       admissionNumber,
       studentName,
       fatherName: fatherName || '',
@@ -193,15 +213,16 @@ export const addStudentManually = async (req, res) => {
       emisNumber: emisNumber || '',
       currentClass,
       section,
-      addedById: req.user?.id
-    });
+      addedById: req.user?.id,
+      applicationId: applicationId || null
+    }], { session });
 
     if (Array.isArray(req.body.includedChargesIds) && req.body.includedChargesIds.length > 0) {
       await StudentIncludedCharge.insertMany(
         req.body.includedChargesIds.map(chargeId => ({
-          studentId: student._id,
+          studentId: student[0]._id,
           includedChargeId: chargeId
-        }))
+        })), { session }
       );
 
       for (const chargeId of req.body.includedChargesIds) {
@@ -209,23 +230,39 @@ export const addStudentManually = async (req, res) => {
           performedById: req.user?.id,
           reason: `Assigned to student ${admissionNumber}`,
           referenceType: 'Student',
-          referenceId: student._id
+          referenceId: student[0]._id
         });
       }
     }
 
-    if (req.user) {
-      await ActivityLog.create({
-        userId: req.user.id,
-        action: 'CREATED_STUDENT_MANUALLY',
-        details: `Student ${admissionNumber} created manually for class ${currentClass}`
-      });
+    if (application) {
+      application.status = 'APPROVED';
+      application.approvedBy = req.user?.id;
+      application.approvedAt = new Date();
+      application.adminNo = admissionNumber;
+      application.student = student[0]._id;
+      await application.save({ session });
     }
 
-    res.status(201).json(student);
+    if (req.user) {
+      await ActivityLog.create([{
+        userId: req.user.id,
+        action: applicationId ? 'APPROVED_APPLICATION' : 'CREATED_STUDENT_MANUALLY',
+        details: applicationId 
+          ? `Application ${application.applicationId} approved. Student ${admissionNumber} created.`
+          : `Student ${admissionNumber} created manually for class ${currentClass}`
+      }], { session });
+    }
+
+    await session.commitTransaction();
+    session.endSession();
+
+    res.status(201).json(student[0]);
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
     console.error("Manual add error:", error);
-    res.status(500).json({ error: 'Error adding student manually' });
+    res.status(500).json({ error: error.message || 'Error adding student manually' });
   }
 };
 

@@ -4,11 +4,12 @@ const applicationSchema = new mongoose.Schema({
   applicationId: { type: String, required: true, unique: true },
   adminNo: { type: String },
   studentName: { type: String, required: true },
-  fatherName: { type: String, required: true },
-  motherName: { type: String, required: true },
-  fatherPhone: { type: String, required: true },
-  motherPhone: { type: String, required: true },
-  address: { type: String, required: true },
+  parentName: { type: String, required: true },
+  fatherName: { type: String },
+  motherName: { type: String },
+  fatherPhone: { type: String },
+  motherPhone: { type: String },
+  address: { type: String },
   applyingClass: { type: String, required: true },
   previousSchool: { type: String },
   applicationDate: { type: Date, default: Date.now },
@@ -16,7 +17,9 @@ const applicationSchema = new mongoose.Schema({
   feePaid: { type: Boolean, default: false },
   siblings: { type: mongoose.Schema.Types.Mixed },
   processedById: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  student: { type: mongoose.Schema.Types.ObjectId, ref: 'Student' }
+  student: { type: mongoose.Schema.Types.ObjectId, ref: 'Student' },
+  approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  approvedAt: { type: Date }
 }, { timestamps: true });
 
 export default mongoose.model('Application', applicationSchema);

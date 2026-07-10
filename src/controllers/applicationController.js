@@ -59,7 +59,7 @@ export const createApplication = async (req, res) => {
   try {
     const {
       applicationNo, adminNo,
-      studentName, fatherName, motherName, fatherPhone, motherPhone,
+      studentName, parentName, fatherName, motherName, fatherPhone, motherPhone,
       address, applyingClass, previousSchool, siblings, feePaid
     } = req.body;
 
@@ -70,6 +70,7 @@ export const createApplication = async (req, res) => {
       applicationId,
       adminNo: finalAdminNo,
       studentName,
+      parentName,
       fatherName,
       motherName,
       fatherPhone,
@@ -121,6 +122,19 @@ export const getApplications = async (req, res) => {
   }
 };
 
+export const getApplicationById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const application = await Application.findById(id).populate('processedById', 'username');
+    if (!application) {
+      return res.status(404).json({ error: 'Application not found' });
+    }
+    res.json(application);
+  } catch (error) {
+    res.status(500).json({ error: 'Error fetching application' });
+  }
+};
+
 export const approveApplication = async (req, res) => {
   try {
     const { id } = req.params;
@@ -142,11 +156,51 @@ export const approveApplication = async (req, res) => {
       return;
     }
 
-    if (!application.adminNo) {
-      res.status(400).json({ error: 'Admission Number is required. Edit the application to add one before approving.' });
-      return;
+    const generateAdmissionNumber = async () => {
+      try {
+        const settingsPath = path.join(process.cwd(), 'settings.json');
+        if (fs.existsSync(settingsPath)) {
+          const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+          if (settings.nextAdmissionNo) {
+            const nextNo = settings.nextAdmissionNo;
+            const parts = nextNo.split('-');
+            if (parts.length >= 2) {
+              const lastNumStr = parts[parts.length - 1];
+              const lastNum = parseInt(lastNumStr, 10);
+              if (!isNaN(lastNum)) {
+                const prefix = parts.slice(0, parts.length - 1).join('-');
+                const paddingLength = lastNumStr.length > 0 ? lastNumStr.length : 2;
+                settings.nextAdmissionNo = `${prefix}-${String(lastNum + 1).padStart(paddingLength, '0')}`;
+                fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+              }
+            }
+            return nextNo;
+          }
+        }
+      } catch(e) {}
+    
+      const latestStudent = await Student.findOne().sort({ createdAt: -1 });
+      if (!latestStudent) return `KA-01`;
+    
+      const parts = latestStudent.admissionNumber.split('-');
+      if (parts.length >= 2) {
+        const lastNumStr = parts[parts.length - 1];
+        const lastNum = parseInt(lastNumStr, 10);
+    
+        if (!isNaN(lastNum)) {
+          const prefix = parts.slice(0, parts.length - 1).join('-');
+          const paddingLength = lastNumStr.length > 0 ? lastNumStr.length : 2;
+          return `${prefix}-${String(lastNum + 1).padStart(paddingLength, '0')}`;
+        }
+      }
+    
+      return `KA-01`;
+    };
+
+    let admissionNumber = application.adminNo;
+    if (!admissionNumber) {
+      admissionNumber = await generateAdmissionNumber();
     }
-    const admissionNumber = application.adminNo;
 
     const updatedApp = await Application.findByIdAndUpdate(
       id,
@@ -157,6 +211,7 @@ export const approveApplication = async (req, res) => {
       admissionNumber,
       applicationId: application._id,
       studentName: application.studentName,
+      guardian: application.parentName,
       fatherName: application.fatherName,
       motherName: application.motherName,
       fatherPhone: application.fatherPhone,

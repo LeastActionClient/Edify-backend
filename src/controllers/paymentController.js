@@ -10,134 +10,77 @@ const generateInvoiceNumber = async () => {
 
 export const createPayment = async (req, res) => {
   try {
-    const { studentId, studentFeeId, amount, paymentMethod, referenceNumber, remarks } = req.body;
+    const { studentId, studentFeeIds, amount, paymentMethod, referenceNumber, remarks } = req.body;
 
-    if (studentFeeId === 'FULL') {
-      const unpaidFees = await StudentFee.find({ studentId, remainingAmount: { $gt: 0 } });
-      const totalRemaining = unpaidFees.reduce((sum, f) => sum + f.remainingAmount, 0);
+    if (!studentFeeIds || !Array.isArray(studentFeeIds) || studentFeeIds.length === 0) {
+      return res.status(400).json({ error: 'No fees selected for payment' });
+    }
+
+    const unpaidFees = await StudentFee.find({ _id: { $in: studentFeeIds }, studentId });
+    if (unpaidFees.length !== studentFeeIds.length) {
+      return res.status(404).json({ error: 'Some fee records were not found or do not belong to this student' });
+    }
+
+    const totalRemaining = unpaidFees.reduce((sum, f) => sum + f.remainingAmount, 0);
+    if (amount > totalRemaining) {
+      return res.status(400).json({ error: 'Amount exceeds total remaining balance for selected fees' });
+    }
+
+    let amountLeftToDistribute = amount;
+    const feeAllocations = [];
+    
+    for (const fee of unpaidFees) {
+      if (amountLeftToDistribute <= 0) break;
       
-      if (amount > totalRemaining) {
-        return res.status(400).json({ error: 'Amount exceeds total remaining balance' });
-      }
+      const paymentAmountForFee = Math.min(amountLeftToDistribute, fee.remainingAmount);
+      amountLeftToDistribute -= paymentAmountForFee;
+      feeAllocations.push({ studentFeeId: fee._id, amount: paymentAmountForFee });
       
-      let amountLeftToDistribute = amount;
-      const feeAllocations = [];
+      const newRemainingAmount = fee.remainingAmount - paymentAmountForFee;
+      const newPaidAmount = fee.paidAmount + paymentAmountForFee;
+      const feeStatus = newRemainingAmount === 0 ? 'PAID' : 'PARTIAL';
       
-      for (const fee of unpaidFees) {
-        if (amountLeftToDistribute <= 0) break;
-        
-        const paymentAmountForFee = Math.min(amountLeftToDistribute, fee.remainingAmount);
-        amountLeftToDistribute -= paymentAmountForFee;
-        feeAllocations.push({ studentFeeId: fee._id, amount: paymentAmountForFee });
-        
-        const newRemainingAmount = fee.remainingAmount - paymentAmountForFee;
-        const newPaidAmount = fee.paidAmount + paymentAmountForFee;
-        const feeStatus = newRemainingAmount === 0 ? 'PAID' : 'PARTIAL';
-        
-        await StudentFee.findByIdAndUpdate(fee._id, {
-          paidAmount: newPaidAmount,
-          remainingAmount: newRemainingAmount
-        });
-        
-        if (feeStatus === 'PAID') {
-          const category = await FeeCategory.findById(fee.feeCategoryId);
-          if (category && category.name.toLowerCase().includes('full')) {
-            await StudentFee.updateMany(
-              { studentId, _id: { $ne: fee._id }, remainingAmount: { $gt: 0 } },
-              { remainingAmount: 0 }
-            );
-          }
+      await StudentFee.findByIdAndUpdate(fee._id, {
+        paidAmount: newPaidAmount,
+        remainingAmount: newRemainingAmount
+      });
+      
+      if (feeStatus === 'PAID') {
+        const category = await FeeCategory.findById(fee.feeCategoryId);
+        if (category && category.name.toLowerCase().includes('full')) {
+          await StudentFee.updateMany(
+            { studentId, _id: { $ne: fee._id }, remainingAmount: { $gt: 0 } },
+            { remainingAmount: 0 }
+          );
         }
       }
-
-      const payment = await Payment.create({
-        studentId,
-        isFullPayment: true,
-        feeAllocations,
-        amount,
-        paymentMethod,
-        referenceNumber,
-        remarks,
-        status: amount === totalRemaining ? 'PAID' : 'PARTIAL',
-        recordedById: req.user.id
-      });
-      
-      const invNum = await generateInvoiceNumber();
-      const invoice = await Invoice.create({
-        invoiceNumber: invNum,
-        paymentId: payment._id,
-        studentId
-      });
-      
-      await ActivityLog.create({
-        userId: req.user.id,
-        action: 'CREATED_PAYMENT',
-        details: `Full Payment of ${amount} recorded for student ${studentId} covering multiple fees`
-      });
-      
-      return res.status(201).json({ message: 'Full payment processed', payments: [{ ...payment.toObject(), invoice }] });
     }
-
-    const studentFee = await StudentFee.findById(studentFeeId);
-
-    if (!studentFee) {
-      res.status(404).json({ error: 'Student fee record not found' });
-      return;
-    }
-
-    if (amount > studentFee.remainingAmount) {
-      res.status(400).json({ error: 'Amount exceeds remaining balance' });
-      return;
-    }
-
-    const newRemainingAmount = studentFee.remainingAmount - amount;
-    const newPaidAmount = studentFee.paidAmount + amount;
-    const feeStatus = newRemainingAmount === 0 ? 'PAID' : 'PARTIAL';
 
     const payment = await Payment.create({
       studentId,
-      studentFeeId,
+      isFullPayment: false, // We mark it as false so invoice prints individual lines
+      feeAllocations,
       amount,
       paymentMethod,
       referenceNumber,
       remarks,
-      status: feeStatus,
+      status: amount === totalRemaining ? 'PAID' : 'PARTIAL',
       recordedById: req.user.id
     });
-
-    await StudentFee.findByIdAndUpdate(studentFeeId, {
-      paidAmount: newPaidAmount,
-      remainingAmount: newRemainingAmount
-    });
-
-    const invoiceNumber = await generateInvoiceNumber();
-
+    
+    const invNum = await generateInvoiceNumber();
     const invoice = await Invoice.create({
-      invoiceNumber,
+      invoiceNumber: invNum,
       paymentId: payment._id,
       studentId
     });
-
-    if (feeStatus === 'PAID') {
-      const category = await FeeCategory.findById(studentFee.feeCategoryId);
-      if (category && category.name.toLowerCase().includes('full')) {
-        await StudentFee.updateMany(
-          {
-            studentId,
-            _id: { $ne: studentFeeId },
-            remainingAmount: { $gt: 0 }
-          },
-          { remainingAmount: 0 }
-        );
-      }
-    }
-
+    
     await ActivityLog.create({
       userId: req.user.id,
       action: 'CREATED_PAYMENT',
-      details: `Payment of ${amount} recorded for student ${studentId}`
+      details: `Payment of ${amount} recorded for student ${studentId} covering multiple fees`
     });
-
+    
     res.status(201).json({ ...payment.toObject(), invoice });
   } catch (error) {
     console.error(error);
@@ -148,8 +91,9 @@ export const createPayment = async (req, res) => {
 export const getPaymentHistory = async (req, res) => {
   try {
     const payments = await Payment.find()
-      .populate('studentId', 'studentName admissionNumber')
+      .populate('studentId', 'studentName admissionNumber currentClass section')
       .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId' } })
+      .populate({ path: 'feeAllocations.studentFeeId', populate: { path: 'feeCategoryId' } })
       .populate('recordedById', 'username')
       .sort({ paymentDate: -1 });
 
@@ -193,6 +137,7 @@ export const generateInvoicePDF = async (req, res) => {
     const payment = await Payment.findById(id)
       .populate('studentId')
       .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId' } })
+      .populate({ path: 'feeAllocations.studentFeeId', populate: { path: 'feeCategoryId' } })
       .populate('recordedById', 'username');
 
     const invoice = await Invoice.findOne({ paymentId: id });
@@ -205,13 +150,21 @@ export const generateInvoicePDF = async (req, res) => {
     let fullTotalAmount = 0;
     let fullRemainingBalance = 0;
     
-    if (payment.isFullPayment) {
+    if (payment.feeAllocations && payment.feeAllocations.length > 0) {
+      payment.feeAllocations.forEach(alloc => {
+        fullTotalAmount += alloc.studentFeeId?.totalAmount || 0;
+        fullRemainingBalance += alloc.studentFeeId?.remainingAmount || 0;
+      });
+    } else if (payment.isFullPayment) {
       const allFees = await StudentFee.find({ studentId: payment.studentId._id });
       fullTotalAmount = allFees.reduce((sum, f) => sum + f.totalAmount, 0);
       fullRemainingBalance = allFees.reduce((sum, f) => sum + f.remainingAmount, 0);
     }
 
-    const doc = new PDFDocument({ margin: 30, size: 'A5', layout: 'landscape' });
+    const doc = new PDFDocument({ 
+      margins: { top: 10, bottom: 5, left: 40, right: 40 }, 
+      size: [595.28, 280.63] 
+    });
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename=invoice_${invoice.invoiceNumber}.pdf`);
@@ -226,7 +179,7 @@ export const generateInvoicePDF = async (req, res) => {
         const svgCode = fs.readFileSync(logoPath, 'utf8');
         doc.save();
         doc.translate(40, 15);
-        doc.scale(60 / 400);
+        doc.scale(50 / 400);
         SVGtoPDF(doc, svgCode, 0, 0, { assumePt: true });
         doc.restore();
       } catch(e) {
@@ -235,89 +188,85 @@ export const generateInvoicePDF = async (req, res) => {
     }
 
     doc.fillColor('#1E3A8A')
-       .fontSize(18)
-       .font('Helvetica-Bold')
-       .text('KASTHURI NURSERY & PRIMARY SCHOOL', 110, 25, { align: 'left' });
-
-    doc.fillColor('#4B5563')
-       .fontSize(9)
-       .font('Helvetica')
-       .text('No.15 & 44 Eda Street, Saidapet, Vellore - 632 012.', 110, 48)
-       .text('Phone: 0416-2211877, +91 97919 50179 | Email: Kasthurinurseryschool@gmail.com', 110, 60);
-
-    doc.fillColor('#000000')
        .fontSize(14)
        .font('Helvetica-Bold')
-       .text('FEE RECEIPT / INVOICE', 40, 85, { align: 'right' });
+       .text('KASTHURI NURSERY & PRIMARY SCHOOL', 95, 20, { align: 'left' });
 
-    doc.moveTo(40, 105).lineTo(555, 105).strokeColor('#E5E7EB').stroke();
+    doc.fillColor('#4B5563')
+       .fontSize(8)
+       .font('Helvetica')
+       .text('No.15 & 44 Eda Street, Saidapet, Vellore - 632 012.', 95, 35)
+       .text('Phone: 0416-2211877, +91 97919 50179 | Email: Kasthurinurseryschool@gmail.com', 95, 45);
 
-    const topY = 120;
+    doc.fillColor('#000000')
+       .fontSize(12)
+       .font('Helvetica-Bold')
+       .text('FEE RECEIPT / INVOICE', 40, 20, { align: 'right' });
+
+    doc.moveTo(40, 65).lineTo(555, 65).strokeColor('#E5E7EB').stroke();
+
+    const topY = 75;
 
     doc.fontSize(9).font('Helvetica-Bold').fillColor('#374151').text('Invoice Details:', 40, topY);
-    doc.font('Helvetica').fillColor('#000000').text(`Invoice No: ${invoice.invoiceNumber}`, 40, topY + 15);
-    doc.text(`Date: ${payment.paymentDate.toLocaleDateString()}`, 40, topY + 30);
-    doc.text(`Payment Method: ${payment.paymentMethod}`, 40, topY + 45);
-    let currentY = topY + 60;
+    doc.font('Helvetica').fillColor('#000000').text(`Date: ${payment.paymentDate.toLocaleDateString()}`, 40, topY + 12);
+    doc.text(`Payment Method: ${payment.paymentMethod}`, 40, topY + 24);
     if (payment.referenceNumber) {
-      doc.text(`Ref No: ${payment.referenceNumber}`, 40, currentY);
-      currentY += 15;
-    }
-    if (payment.recordedById) {
-      doc.text(`Recorded By: ${payment.recordedById.username}`, 40, currentY);
+      doc.text(`Ref No: ${payment.referenceNumber}`, 40, topY + 36);
     }
 
     doc.font('Helvetica-Bold').fillColor('#374151').text('Student Details:', 300, topY);
-    doc.font('Helvetica').fillColor('#000000').text(`Name: ${payment.studentId.studentName}`, 300, topY + 15);
-    doc.text(`Admission No: ${payment.studentId.admissionNumber}`, 300, topY + 30);
-    doc.text(`Class & Section: ${payment.studentId.currentClass} ${payment.studentId.section || ''}`, 300, topY + 45);
-    doc.text(`Parents: ${payment.studentId.fatherName} / ${payment.studentId.motherName}`, 300, topY + 60);
+    doc.font('Helvetica').fillColor('#000000').text(`Name: ${payment.studentId.studentName}`, 300, topY + 12);
+    doc.text(`Admission No: ${payment.studentId.admissionNumber}`, 300, topY + 24);
+    doc.text(`Class & Section: ${payment.studentId.currentClass} ${payment.studentId.section || ''}`, 300, topY + 36);
 
-    const tableTop = 215;
-    doc.rect(40, tableTop, 515, 20).fill('#F3F4F6');
+    const tableTop = 125;
+    doc.rect(40, tableTop, 515, 18).fill('#F3F4F6');
     doc.fillColor('#374151').font('Helvetica-Bold');
-    doc.text('Fee Description', 50, tableTop + 6);
-    doc.text('Total Amount', 240, tableTop + 6);
-    doc.text('Paid (This Receipt)', 340, tableTop + 6);
-    doc.text('Balance', 460, tableTop + 6);
+    doc.text('Fee Description', 50, tableTop + 5);
+    doc.text('Total Amount', 240, tableTop + 5);
+    doc.text('Paid (This Receipt)', 340, tableTop + 5);
+    doc.text('Balance', 460, tableTop + 5);
 
-    const rowTop = tableTop + 20;
-    doc.moveTo(40, rowTop).lineTo(555, rowTop).strokeColor('#E5E7EB').stroke();
+    let currentRowTop = tableTop + 18;
 
     doc.fillColor('#000000').font('Helvetica');
-    if (payment.isFullPayment) {
-      doc.text('Consolidated Full Fees', 50, rowTop + 8);
-      doc.text(`Rs. ${fullTotalAmount.toFixed(2)}`, 240, rowTop + 8);
-      doc.text(`Rs. ${payment.amount.toFixed(2)}`, 340, rowTop + 8);
-      doc.text(`Rs. ${fullRemainingBalance.toFixed(2)}`, 460, rowTop + 8);
+    if (payment.feeAllocations && payment.feeAllocations.length > 0) {
+      payment.feeAllocations.forEach((alloc) => {
+        doc.moveTo(40, currentRowTop).lineTo(555, currentRowTop).strokeColor('#E5E7EB').stroke();
+        const fee = alloc.studentFeeId;
+        const feeName = fee?.feeCategoryId?.name || 'Fee';
+        
+        doc.text(feeName, 50, currentRowTop + 6);
+        doc.text(`Rs. ${fee?.totalAmount?.toFixed(2) || '0.00'}`, 240, currentRowTop + 6);
+        doc.text(`Rs. ${alloc.amount.toFixed(2)}`, 340, currentRowTop + 6);
+        doc.text(`Rs. ${fee?.remainingAmount?.toFixed(2) || '0.00'}`, 460, currentRowTop + 6);
+        
+        currentRowTop += 20;
+      });
     } else if (payment.studentFeeId) {
-      doc.text(payment.studentFeeId.feeCategoryId?.name || 'Fee', 50, rowTop + 8);
-      doc.text(`Rs. ${payment.studentFeeId.totalAmount.toFixed(2)}`, 240, rowTop + 8);
-      doc.text(`Rs. ${payment.amount.toFixed(2)}`, 340, rowTop + 8);
-      doc.text(`Rs. ${payment.studentFeeId.remainingAmount.toFixed(2)}`, 460, rowTop + 8);
+      doc.moveTo(40, currentRowTop).lineTo(555, currentRowTop).strokeColor('#E5E7EB').stroke();
+      doc.text(payment.studentFeeId.feeCategoryId?.name || 'Fee', 50, currentRowTop + 6);
+      doc.text(`Rs. ${payment.studentFeeId.totalAmount.toFixed(2)}`, 240, currentRowTop + 6);
+      doc.text(`Rs. ${payment.amount.toFixed(2)}`, 340, currentRowTop + 6);
+      doc.text(`Rs. ${payment.studentFeeId.remainingAmount.toFixed(2)}`, 460, currentRowTop + 6);
+      currentRowTop += 20;
     }
 
-    doc.moveTo(40, rowTop + 25).lineTo(555, rowTop + 25).strokeColor('#E5E7EB').stroke();
+    doc.moveTo(40, currentRowTop).lineTo(555, currentRowTop).strokeColor('#E5E7EB').stroke();
 
-    const summaryTop = rowTop + 40;
+    const summaryTop = currentRowTop + 10;
     doc.font('Helvetica-Bold').fillColor('#374151').text('Payment Summary', 340, summaryTop);
-    doc.moveTo(340, summaryTop + 15).lineTo(555, summaryTop + 15).strokeColor('#E5E7EB').stroke();
+    doc.moveTo(340, summaryTop + 12).lineTo(555, summaryTop + 12).strokeColor('#E5E7EB').stroke();
 
-    doc.font('Helvetica').fillColor('#000000').text('Amount Received:', 340, summaryTop + 25);
-    doc.font('Helvetica-Bold').text(`Rs. ${payment.amount.toFixed(2)}`, 460, summaryTop + 25);
+    doc.font('Helvetica').fillColor('#000000').text('Amount Received:', 340, summaryTop + 18);
+    doc.font('Helvetica-Bold').text(`Rs. ${payment.amount.toFixed(2)}`, 460, summaryTop + 18);
 
-    doc.font('Helvetica').text('Remaining Balance:', 340, summaryTop + 45);
-    if (payment.isFullPayment) {
-      doc.font('Helvetica').text(`Rs. ${fullRemainingBalance.toFixed(2)}`, 460, summaryTop + 45);
+    doc.font('Helvetica').text('Remaining Balance:', 340, summaryTop + 32);
+    if (payment.feeAllocations && payment.feeAllocations.length > 0) {
+      doc.font('Helvetica').text(`Rs. ${fullRemainingBalance.toFixed(2)}`, 460, summaryTop + 32);
     } else if (payment.studentFeeId) {
-      doc.font('Helvetica').text(`Rs. ${payment.studentFeeId.remainingAmount.toFixed(2)}`, 460, summaryTop + 45);
+      doc.font('Helvetica').text(`Rs. ${payment.studentFeeId.remainingAmount.toFixed(2)}`, 460, summaryTop + 32);
     }
-
-    const signatureTop = summaryTop + 60;
-    doc.moveTo(40, signatureTop).lineTo(160, signatureTop).strokeColor('#000000').stroke();
-    doc.font('Helvetica').text('Authorized Signature', 40, signatureTop + 10, { align: 'center', width: 120 });
-
-    doc.fontSize(9).font('Helvetica-Bold').fillColor('#374151').text('Thank you for your payment. For any queries, please contact the school administration.', 40, 375, { align: 'center' });
 
     doc.end();
 
@@ -337,7 +286,7 @@ export const deletePayment = async (req, res) => {
       return res.status(404).json({ error: 'Payment not found' });
     }
 
-    if (payment.isFullPayment && payment.feeAllocations && payment.feeAllocations.length > 0) {
+    if (payment.feeAllocations && payment.feeAllocations.length > 0) {
       for (const alloc of payment.feeAllocations) {
         await StudentFee.findByIdAndUpdate(alloc.studentFeeId, {
           $inc: { paidAmount: -alloc.amount, remainingAmount: alloc.amount }
