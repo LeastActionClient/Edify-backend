@@ -5,7 +5,11 @@ const studentFeeSchema = new mongoose.Schema({
   feeCategoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'FeeCategory', required: true },
   totalAmount: { type: Number, required: true },
   paidAmount: { type: Number, default: 0 },
-  remainingAmount: { type: Number, required: true }
+  remainingAmount: { type: Number, required: true },
+  uniformDetails: {
+    topLength: { type: Number, default: 0 },
+    bottomLength: { type: Number, default: 0 }
+  }
 }, { timestamps: true });
 
 export default mongoose.model('StudentFee', studentFeeSchema);

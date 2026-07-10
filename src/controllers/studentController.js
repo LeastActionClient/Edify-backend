@@ -1,6 +1,96 @@
-import { Application, Student, ActivityLog, StudentFee, StudentIncludedCharge, StudentActivity, Payment, Invoice, FeeCategory } from '../models/index.js';
+import { Application, Student, ActivityLog, StudentFee, StudentIncludedCharge, StudentActivity, Payment, Invoice, FeeCategory, Class, Section } from '../models/index.js';
 import fs from 'fs';
 import path from 'path';
+
+export const assignClassDefaultFeesToStudent = async (student) => {
+  try {
+    const studentId = student._id;
+    const currentClass = student.currentClass;
+    const section = student.section;
+
+    // Find class default fees
+    let defaultFees = {};
+    const classDoc = await Class.findOne({ name: currentClass });
+    if (classDoc) {
+      if (section) {
+        const sectionDoc = await Section.findOne({ name: section, classId: classDoc._id });
+        if (sectionDoc && sectionDoc.defaultFees && Object.keys(sectionDoc.defaultFees).length > 0) {
+          defaultFees = sectionDoc.defaultFees;
+        } else if (classDoc.defaultFees) {
+          defaultFees = classDoc.defaultFees;
+        }
+      } else if (classDoc.defaultFees) {
+        defaultFees = classDoc.defaultFees;
+      }
+    }
+
+    // Get all mandatory fee categories and Uniform category
+    const categories = await FeeCategory.find();
+    const validCatMap = new Map(categories.map(c => [c._id.toString(), c]));
+
+    let baseFeeTotal = 0;
+
+    // For this student, we assign all mandatory categories and Uniform if defined in class/section defaultFees
+    for (const catId of Object.keys(defaultFees)) {
+      const cat = validCatMap.get(catId);
+      if (!cat) continue;
+
+      const isMandatory = cat.mandatory;
+      const isUniform = cat.name.toLowerCase() === 'uniform';
+
+      if (isMandatory || isUniform) {
+        const feeConfig = defaultFees[catId];
+        let amount = 0;
+        let uniformDetailsToSave = undefined;
+
+        if (isUniform) {
+          amount = 0; // starts at 0 since lengths are 0
+          uniformDetailsToSave = { topLength: 0, bottomLength: 0 };
+        } else {
+          amount = typeof feeConfig === 'number' ? feeConfig : parseFloat(feeConfig?.amount || 0);
+        }
+
+        if (isUniform) {
+          const existing = await StudentFee.findOne({ studentId, feeCategoryId: catId });
+          if (!existing) {
+            await StudentFee.create({
+              studentId,
+              feeCategoryId: catId,
+              totalAmount: amount,
+              remainingAmount: amount,
+              paidAmount: 0,
+              uniformDetails: uniformDetailsToSave
+            });
+          }
+        } else if (amount > 0) {
+          baseFeeTotal += amount;
+          const existing = await StudentFee.findOne({ studentId, feeCategoryId: catId });
+          if (existing) {
+            existing.totalAmount = amount;
+            existing.remainingAmount = Math.max(0, amount - existing.paidAmount);
+            await existing.save();
+          } else {
+            await StudentFee.create({
+              studentId,
+              feeCategoryId: catId,
+              totalAmount: amount,
+              remainingAmount: amount,
+              paidAmount: 0
+            });
+          }
+        }
+      }
+    }
+
+    // Update student's baseFee and grandTotal
+    await Student.findByIdAndUpdate(studentId, {
+      baseFee: baseFeeTotal,
+      grandTotal: baseFeeTotal
+    });
+  } catch (error) {
+    console.error("Error assigning class default fees to student", error);
+  }
+};
 
 export const getStudents = async (req, res) => {
   try {
@@ -183,6 +273,8 @@ export const addStudentManually = async (req, res) => {
       addedById: req.user?.id
     });
 
+    await assignClassDefaultFeesToStudent(student);
+
     if (req.user) {
       await ActivityLog.create({
         userId: req.user.id,
@@ -263,7 +355,7 @@ export const bulkImportStudents = async (req, res) => {
       }
 
       try {
-        await Student.create({
+        const student = await Student.create({
           admissionNumber: String(admissionNumber),
           studentName: String(studentName),
           fatherName: String(row['Father Name'] || row['fatherName'] || ''),
@@ -292,6 +384,7 @@ export const bulkImportStudents = async (req, res) => {
           section: section || null,
           addedById: req.user?.id
         });
+        await assignClassDefaultFeesToStudent(student);
         successCount++;
       } catch (err) {
         if (err.code === 11000) {
@@ -374,8 +467,7 @@ export const updateStudent = async (req, res) => {
       admissionNumber, dateOfBirth, gender, bloodGroup, aadhaarNumber, religion, community,
       nationality, email, rollNumber, admissionDate, academicYear, studentStatus,
       fatherOccupation, motherOccupation, guardian, city, state, pincode, photoUrl,
-      baseFee, includedChargesTotal, activitiesTotal, grandTotal,
-      includedChargesIds, activitiesIds
+      baseFee, grandTotal, selectedFeeCategoryIds
     } = req.body;
 
     const student = await Student.findByIdAndUpdate(id, {
@@ -386,108 +478,90 @@ export const updateStudent = async (req, res) => {
       dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
       admissionDate: admissionDate ? new Date(admissionDate) : null,
       baseFee: baseFee ? parseFloat(baseFee) : null,
-      includedChargesTotal: includedChargesTotal ? parseFloat(includedChargesTotal) : null,
-      activitiesTotal: activitiesTotal ? parseFloat(activitiesTotal) : null,
       grandTotal: grandTotal ? parseFloat(grandTotal) : null,
     }, { new: true });
 
-    if (Array.isArray(includedChargesIds)) {
-      await StudentIncludedCharge.deleteMany({ studentId: id });
-      if (includedChargesIds.length > 0) {
-        await StudentIncludedCharge.insertMany(
-          includedChargesIds.map(chargeId => ({
-            studentId: id,
-            includedChargeId: chargeId
-          }))
-        );
+    // Sync the student's fees using selectedFeeCategoryIds
+    if (Array.isArray(selectedFeeCategoryIds)) {
+      let defaultFees = {};
+      const classDoc = await Class.findOne({ name: currentClass });
+      if (classDoc) {
+        if (section) {
+          const sectionDoc = await Section.findOne({ name: section, classId: classDoc._id });
+          if (sectionDoc && sectionDoc.defaultFees && Object.keys(sectionDoc.defaultFees).length > 0) {
+            defaultFees = sectionDoc.defaultFees;
+          } else if (classDoc.defaultFees) {
+            defaultFees = classDoc.defaultFees;
+          }
+        } else if (classDoc.defaultFees) {
+          defaultFees = classDoc.defaultFees;
+        }
       }
-    }
 
-    if (Array.isArray(activitiesIds)) {
-      await StudentActivity.deleteMany({ studentId: id });
-      if (activitiesIds.length > 0) {
-        await StudentActivity.insertMany(
-          activitiesIds.map(activityId => ({
+      const existingStudentFees = await StudentFee.find({ studentId: id });
+      const existingFeeMap = new Map(existingStudentFees.map(f => [f.feeCategoryId.toString(), f]));
+
+      const assignedCatIds = new Set(selectedFeeCategoryIds);
+
+      // Process selected categories
+      for (const catId of selectedFeeCategoryIds) {
+        const cat = await FeeCategory.findById(catId);
+        let newAmount = 0;
+        let uniformDetailsToSave = undefined;
+
+        if (cat && cat.name.toLowerCase() === 'uniform') {
+          const pricing = defaultFees[catId]?.pricing || {};
+          const topPrice = parseFloat(pricing.topPerMetre || 0);
+          const bottomPrice = parseFloat(pricing.bottomPerMetre || 0);
+          const topLen = parseFloat(req.body.uniformDetails?.topLength || 0);
+          const bottomLen = parseFloat(req.body.uniformDetails?.bottomLength || 0);
+          newAmount = (topLen * topPrice) + (bottomLen * bottomPrice);
+          uniformDetailsToSave = {
+            topLength: topLen,
+            bottomLength: bottomLen
+          };
+        } else {
+          const feeConfig = defaultFees[catId];
+          newAmount = typeof feeConfig === 'number' ? feeConfig : parseFloat(feeConfig?.amount || 0);
+        }
+
+        const existing = existingFeeMap.get(catId);
+
+        if (existing) {
+          existing.totalAmount = newAmount;
+          existing.remainingAmount = Math.max(0, newAmount - existing.paidAmount);
+          if (uniformDetailsToSave) {
+            existing.uniformDetails = uniformDetailsToSave;
+          }
+          await existing.save();
+        } else {
+          await StudentFee.create({
             studentId: id,
-            activityId: activityId
-          }))
-        );
+            feeCategoryId: catId,
+            totalAmount: newAmount,
+            remainingAmount: newAmount,
+            paidAmount: 0,
+            uniformDetails: uniformDetailsToSave
+          });
+        }
       }
-    }
 
-    // SYNC TO STUDENT FEES FOR PAYMENTS PAGE
-    const syncSpecialFee = async (feeName, amount) => {
-      if (!amount || amount <= 0) {
-        let cat = await FeeCategory.findOne({ name: feeName });
-        if (cat) {
-          const existing = await StudentFee.findOne({ studentId: id, feeCategoryId: cat._id });
-          if (existing && existing.paidAmount === 0) {
+      // Remove unselected categories if paidAmount is 0
+      for (const existing of existingStudentFees) {
+        const catIdStr = existing.feeCategoryId.toString();
+        if (!assignedCatIds.has(catIdStr)) {
+          if (existing.paidAmount === 0) {
             await StudentFee.findByIdAndDelete(existing._id);
           }
         }
-        return;
       }
-
-      let category = await FeeCategory.findOne({ name: feeName });
-      if (!category) {
-        category = await FeeCategory.create({ name: feeName, amount: 0, description: `System generated ${feeName}` });
-      }
-
-      const existingFee = await StudentFee.findOne({ studentId: id, feeCategoryId: category._id });
-      if (existingFee) {
-        existingFee.totalAmount = amount;
-        existingFee.remainingAmount = amount - existingFee.paidAmount;
-        await existingFee.save();
-      } else {
-        await StudentFee.create({
-          studentId: id,
-          feeCategoryId: category._id,
-          totalAmount: amount,
-          remainingAmount: amount
-        });
-      }
-    };
-
-    const syncBaseFee = async (amount) => {
-      const excludedNames = ['Included Charges', 'Activities'];
-      const excludedCategories = await FeeCategory.find({ name: { $in: excludedNames } });
-      const excludedIds = excludedCategories.map(c => c._id);
-
-      const standardFees = await StudentFee.find({
-        studentId: id,
-        feeCategoryId: { $nin: excludedIds }
-      });
-
-      const totalPaid = standardFees.reduce((sum, f) => sum + (f.paidAmount || 0), 0);
-      
-      // Wipe all existing standard fees to consolidate them
-      if (standardFees.length > 0) {
-        await StudentFee.deleteMany({ _id: { $in: standardFees.map(f => f._id) } });
-      }
-
-      // Create a single consolidated Base Fee matching the form exactly
-      if (amount > 0) {
-        let category = await FeeCategory.findOne({ name: 'Base Fee' });
-        if (!category) category = await FeeCategory.create({ name: 'Base Fee', amount: 0, description: 'System generated Base Fee' });
-        await StudentFee.create({ 
-          studentId: id, 
-          feeCategoryId: category._id, 
-          totalAmount: amount, 
-          paidAmount: totalPaid,
-          remainingAmount: Math.max(0, amount - totalPaid) 
-        });
-      }
-    };
-
-    await syncBaseFee(baseFee ? parseFloat(baseFee) : 0);
-    await syncSpecialFee('Included Charges', includedChargesTotal ? parseFloat(includedChargesTotal) : 0);
-    await syncSpecialFee('Activities', activitiesTotal ? parseFloat(activitiesTotal) : 0);
+    }
 
     if (req.user) {
       await ActivityLog.create({
         userId: req.user.id,
         action: 'UPDATED_STUDENT',
-        details: `Updated full details for student ${id}`
+        details: `Updated full details and synchronized fees for student ${id}`
       });
     }
 
