@@ -7,7 +7,11 @@ const studentFeeSchema = new mongoose.Schema({
   paidAmount: { type: Number, default: 0 },
   remainingAmount: { type: Number, required: true },
   academicYear: { type: String },
-  className: { type: String }
+  className: { type: String },
+  uniformDetails: {
+    topLength: { type: Number, default: 0 },
+    bottomLength: { type: Number, default: 0 }
+  }
 }, { timestamps: true });
 
 export default mongoose.model('StudentFee', studentFeeSchema);

@@ -1,5 +1,114 @@
-import { Student, ActivityLog, StudentFee, StudentIncludedCharge, StudentActivity, Payment, Invoice, FeeCategory, Class, IncludedCharge, IncludedChargeStockTransaction, Application } from '../models/index.js';
 import mongoose from 'mongoose';
+import xlsx from 'xlsx';
+import {
+  Application,
+  Student,
+  ActivityLog,
+  StudentFee,
+  StudentIncludedCharge,
+  StudentActivity,
+  Payment,
+  Invoice,
+  FeeCategory,
+  Class,
+  Section,
+  IncludedCharge,
+  IncludedChargeStockTransaction,
+  Activity
+} from '../models/index.js';
+
+export const assignClassDefaultFeesToStudent = async (student) => {
+  try {
+    const studentId = student._id;
+    const currentClass = student.currentClass;
+    const section = student.section;
+
+    // Find class default fees
+    let defaultFees = {};
+    const classDoc = await Class.findOne({ name: currentClass });
+    if (classDoc) {
+      if (section) {
+        const sectionDoc = await Section.findOne({ name: section, classId: classDoc._id });
+        if (sectionDoc && sectionDoc.defaultFees && Object.keys(sectionDoc.defaultFees).length > 0) {
+          defaultFees = sectionDoc.defaultFees;
+        } else if (classDoc.defaultFees) {
+          defaultFees = classDoc.defaultFees;
+        }
+      } else if (classDoc.defaultFees) {
+        defaultFees = classDoc.defaultFees;
+      }
+    }
+
+    // Get all mandatory fee categories and Uniform category
+    const categories = await FeeCategory.find();
+    const validCatMap = new Map(categories.map(c => [c._id.toString(), c]));
+
+    let baseFeeTotal = 0;
+
+    // For this student, we assign all mandatory categories and Uniform if defined in class/section defaultFees
+    for (const catId of Object.keys(defaultFees)) {
+      const cat = validCatMap.get(catId);
+      if (!cat) continue;
+
+      const isMandatory = cat.mandatory;
+      const isUniform = cat.name.toLowerCase() === 'uniform';
+
+      if (isMandatory || isUniform) {
+        const feeConfig = defaultFees[catId];
+        let amount = 0;
+        let uniformDetailsToSave = undefined;
+
+        if (isUniform) {
+          amount = 0; // starts at 0 since lengths are 0
+          uniformDetailsToSave = { topLength: 0, bottomLength: 0 };
+        } else {
+          amount = typeof feeConfig === 'number' ? feeConfig : parseFloat(feeConfig?.amount || 0);
+        }
+
+        if (isUniform) {
+          const existing = await StudentFee.findOne({ studentId, feeCategoryId: catId });
+          if (!existing) {
+            await StudentFee.create({
+              studentId,
+              feeCategoryId: catId,
+              totalAmount: amount,
+              remainingAmount: amount,
+              paidAmount: 0,
+              uniformDetails: uniformDetailsToSave
+            });
+          }
+        } else if (amount > 0) {
+          baseFeeTotal += amount;
+          const existing = await StudentFee.findOne({ studentId, feeCategoryId: catId });
+          if (existing) {
+            existing.totalAmount = amount;
+            existing.remainingAmount = Math.max(0, amount - existing.paidAmount);
+            await existing.save();
+          } else {
+            await StudentFee.create({
+              studentId,
+              feeCategoryId: catId,
+              totalAmount: amount,
+              remainingAmount: amount,
+              paidAmount: 0
+            });
+          }
+        }
+      }
+    }
+
+    // Update student's baseFee and grandTotal
+    await Student.findByIdAndUpdate(studentId, {
+      baseFee: baseFeeTotal,
+      grandTotal: baseFeeTotal
+    });
+
+    return baseFeeTotal;
+  } catch (error) {
+    console.error("Error assigning class default fees to student", error);
+    return 0;
+  }
+};
 
 export const getStudents = async (req, res) => {
   try {
@@ -146,6 +255,28 @@ const adjustIncludedChargeStock = async (chargeId, delta, meta = {}) => {
   return charge;
 };
 
+const getClassDefaultFees = async (currentClass, section) => {
+  let defaultFees = {};
+  const classDoc = await Class.findOne({ name: currentClass });
+
+  if (!classDoc) {
+    return defaultFees;
+  }
+
+  if (section) {
+    const sectionDoc = await Section.findOne({ name: section, classId: classDoc._id });
+    if (sectionDoc && sectionDoc.defaultFees && Object.keys(sectionDoc.defaultFees).length > 0) {
+      defaultFees = sectionDoc.defaultFees;
+    } else if (classDoc.defaultFees) {
+      defaultFees = classDoc.defaultFees;
+    }
+  } else if (classDoc.defaultFees) {
+    defaultFees = classDoc.defaultFees;
+  }
+
+  return defaultFees;
+};
+
 export const addStudentManually = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -156,7 +287,7 @@ export const addStudentManually = async (req, res) => {
       currentClass, section, admissionNumber: reqAdmissionNumber,
       dateOfBirth, gender, bloodGroup, aadhaarNumber, religion, community, caste, RTE, nationality,
       fatherOccupation, motherOccupation, guardian, city, state, pincode, whatsappNumber, emisNumber,
-      applicationId
+      applicationId, includedChargesIds = [], activitiesIds = []
     } = req.body;
 
     if (!studentName || !currentClass) {
@@ -217,15 +348,32 @@ export const addStudentManually = async (req, res) => {
       applicationId: applicationId || null
     }], { session });
 
-    if (Array.isArray(req.body.includedChargesIds) && req.body.includedChargesIds.length > 0) {
+    const selectedIncludedChargeIds = [...new Set(includedChargesIds.map(id => id?.toString()).filter(Boolean))];
+    const selectedActivityIds = [...new Set(activitiesIds.map(id => id?.toString()).filter(Boolean))];
+
+    if (selectedIncludedChargeIds.length > 0) {
+      const charges = await IncludedCharge.find({ _id: { $in: selectedIncludedChargeIds } });
+      const chargeMap = new Map(charges.map(charge => [charge._id.toString(), charge]));
+
+      for (const chargeId of selectedIncludedChargeIds) {
+        const charge = chargeMap.get(chargeId);
+        if (!charge) {
+          throw new Error('One of the included charges was not found');
+        }
+        if (clampNonNegative(charge.stockQuantity) <= 0) {
+          throw new Error(`Not enough stock for ${charge.name}`);
+        }
+      }
+
       await StudentIncludedCharge.insertMany(
-        req.body.includedChargesIds.map(chargeId => ({
+        selectedIncludedChargeIds.map(chargeId => ({
           studentId: student[0]._id,
           includedChargeId: chargeId
-        })), { session }
+        })),
+        { session }
       );
 
-      for (const chargeId of req.body.includedChargesIds) {
+      for (const chargeId of selectedIncludedChargeIds) {
         await adjustIncludedChargeStock(chargeId, -1, {
           performedById: req.user?.id,
           reason: `Assigned to student ${admissionNumber}`,
@@ -234,6 +382,39 @@ export const addStudentManually = async (req, res) => {
         });
       }
     }
+
+    if (selectedActivityIds.length > 0) {
+      const activities = await Activity.find({ _id: { $in: selectedActivityIds } });
+      const activityIdsFound = new Set(activities.map(activity => activity._id.toString()));
+      const missingActivityId = selectedActivityIds.find(activityId => !activityIdsFound.has(activityId));
+      if (missingActivityId) {
+        throw new Error('One of the activities was not found');
+      }
+
+      await StudentActivity.insertMany(
+        selectedActivityIds.map(activityId => ({
+          studentId: student[0]._id,
+          activityId
+        })),
+        { session }
+      );
+    }
+
+    const baseFeeTotal = await assignClassDefaultFeesToStudent(student[0]);
+    const selectedIncludedCharges = selectedIncludedChargeIds.length > 0
+      ? await IncludedCharge.find({ _id: { $in: selectedIncludedChargeIds } })
+      : [];
+    const selectedActivities = selectedActivityIds.length > 0
+      ? await Activity.find({ _id: { $in: selectedActivityIds } })
+      : [];
+    const includedChargesTotal = selectedIncludedCharges.reduce((sum, charge) => sum + (Number(charge.amount) || 0), 0);
+    const activitiesTotal = selectedActivities.reduce((sum, activity) => sum + (Number(activity.amount) || 0), 0);
+
+    await Student.findByIdAndUpdate(student[0]._id, {
+      includedChargesTotal,
+      activitiesTotal,
+      grandTotal: baseFeeTotal + includedChargesTotal + activitiesTotal
+    }, { session });
 
     if (application) {
       application.status = 'APPROVED';
@@ -265,8 +446,6 @@ export const addStudentManually = async (req, res) => {
     res.status(500).json({ error: error.message || 'Error adding student manually' });
   }
 };
-
-import xlsx from 'xlsx';
 
 export const bulkImportStudents = async (req, res) => {
   try {
@@ -313,7 +492,7 @@ export const bulkImportStudents = async (req, res) => {
       }
 
       try {
-        await Student.create({
+        const student = await Student.create({
           admissionNumber: String(admissionNumber),
           studentName: String(studentName),
           fatherName: String(row['Father Name'] || row['fatherName'] || ''),
@@ -342,6 +521,7 @@ export const bulkImportStudents = async (req, res) => {
           section: section || null,
           addedById: req.user?.id
         });
+        await assignClassDefaultFeesToStudent(student);
         successCount++;
       } catch (err) {
         if (err.code === 11000) {
@@ -431,56 +611,83 @@ export const updateStudent = async (req, res) => {
   try {
     const { id } = req.params;
     const {
-      studentName, fatherName, motherName, fatherPhone, motherPhone, address, currentClass, section,
-      admissionNumber, dateOfBirth, gender, bloodGroup, aadhaarNumber, religion, community,
-      nationality, email, rollNumber, admissionDate, academicYear, studentStatus,
-      fatherOccupation, motherOccupation, guardian, city, state, pincode, photoUrl,
-      RTE, isRTE,
-      baseFee, includedChargesTotal, activitiesTotal, grandTotal,
-      includedChargesIds, activitiesIds
+      studentName,
+      fatherName,
+      motherName,
+      fatherPhone,
+      motherPhone,
+      address,
+      currentClass,
+      section,
+      admissionNumber,
+      dateOfBirth,
+      gender,
+      bloodGroup,
+      aadhaarNumber,
+      religion,
+      community,
+      nationality,
+      email,
+      rollNumber,
+      admissionDate,
+      academicYear,
+      studentStatus,
+      fatherOccupation,
+      motherOccupation,
+      guardian,
+      city,
+      state,
+      pincode,
+      photoUrl,
+      RTE,
+      isRTE,
+      baseFee,
+      includedChargesTotal,
+      activitiesTotal,
+      grandTotal,
+      includedChargesIds,
+      activitiesIds
     } = req.body;
+
+    const currentStudent = await Student.findById(id);
+    if (!currentStudent) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
 
     const resolvedRTE = typeof isRTE === 'boolean'
       ? (isRTE ? 'RTE' : 'General')
       : (RTE || '');
 
-    const currentStudent = await Student.findById(id);
-    const previousIncludedAssignments = await StudentIncludedCharge.find({ studentId: id });
-    const previousIncludedChargeIds = previousIncludedAssignments
-      .map(item => item.includedChargeId?.toString())
-      .filter(Boolean);
-    const nextIncludedChargeIds = Array.isArray(includedChargesIds)
-      ? [...new Set(includedChargesIds.map(id => id?.toString()).filter(Boolean))]
-      : null;
-    const previousSet = new Set(previousIncludedChargeIds);
-    const nextSet = nextIncludedChargeIds ? new Set(nextIncludedChargeIds) : null;
-    const removedChargeIds = nextSet ? previousIncludedChargeIds.filter(chargeId => !nextSet.has(chargeId)) : [];
-    const addedChargeIds = nextSet ? nextIncludedChargeIds.filter(chargeId => !previousSet.has(chargeId)) : [];
+    const normalizeNumber = (value, fallback = 0) => {
+      const parsed = Number.parseFloat(value);
+      return Number.isFinite(parsed) ? parsed : fallback;
+    };
 
-    const student = await Student.findByIdAndUpdate(id, {
-      studentName, fatherName, motherName, fatherPhone, motherPhone, address, currentClass, section,
-      admissionNumber, gender, bloodGroup, aadhaarNumber, religion, community,
-      nationality, email, rollNumber, academicYear, studentStatus,
-      fatherOccupation, motherOccupation, guardian, city, state, pincode, photoUrl,
-      RTE: resolvedRTE,
-      dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
-      admissionDate: admissionDate ? new Date(admissionDate) : null,
-      baseFee: baseFee ? parseFloat(baseFee) : null,
-      includedChargesTotal: includedChargesTotal ? parseFloat(includedChargesTotal) : null,
-      activitiesTotal: activitiesTotal ? parseFloat(activitiesTotal) : null,
-      grandTotal: grandTotal ? parseFloat(grandTotal) : null,
-    }, { new: true });
+    const currentClassName = currentClass || currentStudent.currentClass;
+    const currentAcademicYear = academicYear || currentStudent.academicYear;
 
-    if (nextIncludedChargeIds !== null) {
-      const chargeDocs = await IncludedCharge.find({ _id: { $in: nextIncludedChargeIds } });
-      const chargeMap = new Map(chargeDocs.map(charge => [charge._id.toString(), charge]));
-      for (const chargeId of addedChargeIds) {
-        const charge = chargeMap.get(chargeId);
-        if (!charge) {
-          return res.status(404).json({ error: 'One of the included charges was not found' });
-        }
-        if (clampNonNegative(charge.stockQuantity) <= 0) {
-          return res.status(400).json({ error: `Not enough stock for ${charge.name}` });
+    if (Array.isArray(includedChargesIds)) {
+      const nextIncludedChargeIds = [...new Set(includedChargesIds.map(value => value?.toString()).filter(Boolean))];
+      const previousAssignments = await StudentIncludedCharge.find({ studentId: id });
+      const previousIncludedChargeIds = previousAssignments
+        .map(item => item.includedChargeId?.toString())
+        .filter(Boolean);
+      const previousSet = new Set(previousIncludedChargeIds);
+      const nextSet = new Set(nextIncludedChargeIds);
+      const removedChargeIds = previousIncludedChargeIds.filter(chargeId => !nextSet.has(chargeId));
+      const addedChargeIds = nextIncludedChargeIds.filter(chargeId => !previousSet.has(chargeId));
+
+      if (addedChargeIds.length > 0) {
+        const chargeDocs = await IncludedCharge.find({ _id: { $in: addedChargeIds } });
+        const chargeMap = new Map(chargeDocs.map(charge => [charge._id.toString(), charge]));
+        for (const chargeId of addedChargeIds) {
+          const charge = chargeMap.get(chargeId);
+          if (!charge) {
+            return res.status(404).json({ error: 'One of the included charges was not found' });
+          }
+          if (clampNonNegative(charge.stockQuantity) <= 0) {
+            return res.status(400).json({ error: `Not enough stock for ${charge.name}` });
+          }
         }
       }
 
@@ -497,61 +704,53 @@ export const updateStudent = async (req, res) => {
       for (const chargeId of removedChargeIds) {
         await adjustIncludedChargeStock(chargeId, 1, {
           performedById: req.user?.id,
-          reason: `Removed from student ${student?.admissionNumber || id}`,
+          reason: `Removed from student ${currentStudent?.admissionNumber || id}`,
           referenceType: 'Student',
-          referenceId: student?._id || id
+          referenceId: currentStudent?._id || id
         });
       }
 
       for (const chargeId of addedChargeIds) {
         await adjustIncludedChargeStock(chargeId, -1, {
           performedById: req.user?.id,
-          reason: `Assigned to student ${student?.admissionNumber || id}`,
+          reason: `Assigned to student ${currentStudent?.admissionNumber || id}`,
           referenceType: 'Student',
-          referenceId: student?._id || id
+          referenceId: currentStudent?._id || id
         });
       }
     }
 
     if (Array.isArray(activitiesIds)) {
+      const nextActivityIds = [...new Set(activitiesIds.map(value => value?.toString()).filter(Boolean))];
+      const activityDocs = nextActivityIds.length > 0
+        ? await Activity.find({ _id: { $in: nextActivityIds } })
+        : [];
+      const activitySet = new Set(activityDocs.map(activity => activity._id.toString()));
+      const missingActivityId = nextActivityIds.find(activityId => !activitySet.has(activityId));
+      if (missingActivityId) {
+        return res.status(404).json({ error: 'One of the activities was not found' });
+      }
+
       await StudentActivity.deleteMany({ studentId: id });
-      if (activitiesIds.length > 0) {
+      if (nextActivityIds.length > 0) {
         await StudentActivity.insertMany(
-          activitiesIds.map(activityId => ({
+          nextActivityIds.map(activityId => ({
             studentId: id,
-            activityId: activityId
+            activityId
           }))
         );
       }
     }
 
-    // SYNC TO STUDENT FEES FOR PAYMENTS PAGE
     const syncSpecialFee = async (feeName, amount) => {
-      const currentStudent = await Student.findById(id);
-      const currentClassName = currentStudent?.currentClass;
-
-      if (!amount || amount <= 0) {
-        let cat = await FeeCategory.findOne({ name: feeName });
-        if (cat) {
-          const existing = await StudentFee.findOne({
-            studentId: id,
-            feeCategoryId: cat._id,
-            $or: [
-              { className: currentClassName },
-              { className: { $exists: false } },
-              { className: null }
-            ]
-          });
-          if (existing && existing.paidAmount === 0) {
-            await StudentFee.findByIdAndDelete(existing._id);
-          }
-        }
-        return;
-      }
-
+      const effectiveAmount = normalizeNumber(amount, 0);
       let category = await FeeCategory.findOne({ name: feeName });
       if (!category) {
-        category = await FeeCategory.create({ name: feeName, amount: 0, description: `System generated ${feeName}` });
+        category = await FeeCategory.create({
+          name: feeName,
+          amount: 0,
+          description: `System generated ${feeName}`
+        });
       }
 
       const existingFee = await StudentFee.findOne({
@@ -563,75 +762,81 @@ export const updateStudent = async (req, res) => {
           { className: null }
         ]
       });
+
+      if (effectiveAmount <= 0) {
+        if (existingFee && existingFee.paidAmount === 0) {
+          await StudentFee.findByIdAndDelete(existingFee._id);
+        }
+        return;
+      }
+
       if (existingFee) {
-        existingFee.totalAmount = amount;
-        existingFee.remainingAmount = amount - existingFee.paidAmount;
+        existingFee.totalAmount = effectiveAmount;
+        existingFee.remainingAmount = Math.max(0, effectiveAmount - (existingFee.paidAmount || 0));
         existingFee.className = currentClassName;
-        existingFee.academicYear = currentStudent?.academicYear;
+        existingFee.academicYear = currentAcademicYear;
         await existingFee.save();
       } else {
         await StudentFee.create({
           studentId: id,
           feeCategoryId: category._id,
-          totalAmount: amount,
-          remainingAmount: amount,
+          totalAmount: effectiveAmount,
+          remainingAmount: effectiveAmount,
           className: currentClassName,
-          academicYear: currentStudent?.academicYear
+          academicYear: currentAcademicYear
         });
       }
     };
 
-    const syncBaseFee = async (amount) => {
-      const excludedNames = ['Included Charges', 'Activities'];
-      const excludedCategories = await FeeCategory.find({ name: { $in: excludedNames } });
-      const excludedIds = excludedCategories.map(c => c._id);
+    await syncSpecialFee('Included Charges', includedChargesTotal);
+    await syncSpecialFee('Activities', activitiesTotal);
 
-      // Only affect fees matching current class (preserve legacy fees from previous classes)
-      const currentStudent = await Student.findById(id);
-      const currentClassName = currentStudent?.currentClass;
+    const resolvedBaseFee = normalizeNumber(baseFee, currentStudent.baseFee || 0);
+    const resolvedIncludedChargesTotal = normalizeNumber(includedChargesTotal, currentStudent.includedChargesTotal || 0);
+    const resolvedActivitiesTotal = normalizeNumber(activitiesTotal, currentStudent.activitiesTotal || 0);
+    const resolvedGrandTotal = normalizeNumber(grandTotal, resolvedBaseFee + resolvedIncludedChargesTotal + resolvedActivitiesTotal);
 
-      const standardFees = await StudentFee.find({
-        studentId: id,
-        feeCategoryId: { $nin: excludedIds },
-        $or: [
-          { className: currentClassName },
-          { className: { $exists: false } },
-          { className: null }
-        ]
-      });
-
-      const totalPaid = standardFees.reduce((sum, f) => sum + (f.paidAmount || 0), 0);
-      
-      // Wipe existing standard fees for current class only
-      if (standardFees.length > 0) {
-        await StudentFee.deleteMany({ _id: { $in: standardFees.map(f => f._id) } });
-      }
-
-      // Create a single consolidated Base Fee matching the form exactly
-      if (amount > 0) {
-        let category = await FeeCategory.findOne({ name: 'Base Fee' });
-        if (!category) category = await FeeCategory.create({ name: 'Base Fee', amount: 0, description: 'System generated Base Fee' });
-        await StudentFee.create({ 
-          studentId: id, 
-          feeCategoryId: category._id, 
-          totalAmount: amount, 
-          paidAmount: totalPaid,
-          remainingAmount: Math.max(0, amount - totalPaid),
-          className: currentClassName,
-          academicYear: currentStudent?.academicYear
-        });
-      }
-    };
-
-    await syncBaseFee(baseFee ? parseFloat(baseFee) : 0);
-    await syncSpecialFee('Included Charges', includedChargesTotal ? parseFloat(includedChargesTotal) : 0);
-    await syncSpecialFee('Activities', activitiesTotal ? parseFloat(activitiesTotal) : 0);
+    const student = await Student.findByIdAndUpdate(id, {
+      studentName,
+      fatherName,
+      motherName,
+      fatherPhone,
+      motherPhone,
+      address,
+      currentClass: currentClassName,
+      section,
+      admissionNumber,
+      gender,
+      bloodGroup,
+      aadhaarNumber,
+      religion,
+      community,
+      nationality,
+      email,
+      rollNumber,
+      academicYear: currentAcademicYear,
+      studentStatus,
+      fatherOccupation,
+      motherOccupation,
+      guardian,
+      city,
+      state,
+      pincode,
+      photoUrl,
+      RTE: resolvedRTE,
+      dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
+      admissionDate: admissionDate ? new Date(admissionDate) : null,
+      baseFee: resolvedBaseFee,
+      includedChargesTotal: resolvedIncludedChargesTotal,
+      activitiesTotal: resolvedActivitiesTotal,
+      grandTotal: resolvedGrandTotal
+    }, { new: true });
 
     if (req.user) {
       await ActivityLog.create({
         userId: req.user.id,
         action: 'UPDATED_STUDENT',
-        details: `Updated full details for student ${id}`
+        details: `Updated full details and synchronized fees for student ${id}`
       });
     }
 
