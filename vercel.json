@@ -1,8 +1,5 @@
 {
-  "version": 2,
-  "functions": {
-    "api/[...all].js": {
-      "maxDuration": 30
-    }
-  }
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/api/[...all]" }
+  ]
 }
