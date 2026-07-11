@@ -11,7 +11,14 @@ const app = express();
 const allowedOrigins = (process.env.CORS_ORIGIN || process.env.FRONTEND_URL || '')
   .split(',')
   .map((origin) => origin.trim())
-  .filter(Boolean);
+  .filter(Boolean)
+  .map((origin) => {
+    try {
+      return new URL(origin).origin;
+    } catch (error) {
+      return origin;
+    }
+  });
 
 const corsOptions = {
   origin: allowedOrigins.length > 0 ? allowedOrigins : true,
@@ -21,7 +28,18 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 app.use(express.json());
-app.options('*', cors(corsOptions));
+app.get('/', (req, res) => {
+  res.json({ status: 'ok', message: 'Kashhuri Billing API is running' });
+});
+app.get('/favicon.ico', (req, res) => {
+  res.status(204).end();
+});
+app.use((req, res, next) => {
+  if (req.method === 'OPTIONS') {
+    return cors(corsOptions)(req, res, next);
+  }
+  return next();
+});
 app.use('/api', apiRoutes);
 
 const dbReady = connectDB();
