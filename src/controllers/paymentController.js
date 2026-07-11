@@ -8,6 +8,64 @@ const generateInvoiceNumber = async () => {
   return `INV-${new Date().getFullYear()}-${String(count + 1).padStart(5, '0')}`;
 };
 
+const getInvoicePaymentData = async (id) => {
+  const paymentDoc = await Payment.findById(id)
+    .populate('studentId')
+    .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId' } })
+    .populate({ path: 'feeAllocations.studentFeeId', populate: { path: 'feeCategoryId' } })
+    .populate('recordedById', 'username');
+
+  const invoiceDoc = await Invoice.findOne({ paymentId: id });
+
+  if (!paymentDoc || !invoiceDoc) {
+    return null;
+  }
+
+  const payment = paymentDoc.toObject();
+  const invoice = invoiceDoc.toObject();
+
+  payment.invoice = invoice;
+
+  if (payment.studentId) {
+    payment.student = payment.studentId;
+  }
+
+  if (payment.studentFeeId) {
+    payment.studentFee = payment.studentFeeId;
+    if (payment.studentFee.feeCategoryId) {
+      payment.studentFee.feeCategory = payment.studentFee.feeCategoryId;
+    }
+  }
+
+  if (payment.recordedById) {
+    payment.recordedBy = payment.recordedById;
+  }
+
+  let fullTotalAmount = 0;
+  let fullRemainingBalance = 0;
+
+  if (payment.feeAllocations && payment.feeAllocations.length > 0) {
+    payment.feeAllocations.forEach((alloc) => {
+      fullTotalAmount += alloc.studentFeeId?.totalAmount || 0;
+      fullRemainingBalance += alloc.studentFeeId?.remainingAmount || 0;
+    });
+  } else if (payment.isFullPayment) {
+    const studentId = payment.studentId?._id || payment.studentId;
+    const allFees = await StudentFee.find({ studentId });
+    fullTotalAmount = allFees.reduce((sum, fee) => sum + fee.totalAmount, 0);
+    fullRemainingBalance = allFees.reduce((sum, fee) => sum + fee.remainingAmount, 0);
+  }
+
+  return {
+    payment,
+    invoice,
+    summary: {
+      fullTotalAmount,
+      fullRemainingBalance
+    }
+  };
+};
+
 export const createPayment = async (req, res) => {
   try {
     const { studentId, studentFeeIds, amount, paymentMethod, referenceNumber, remarks } = req.body;
@@ -134,32 +192,16 @@ export const generateInvoicePDF = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const payment = await Payment.findById(id)
-      .populate('studentId')
-      .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId' } })
-      .populate({ path: 'feeAllocations.studentFeeId', populate: { path: 'feeCategoryId' } })
-      .populate('recordedById', 'username');
+    const invoiceContext = await getInvoicePaymentData(id);
 
-    const invoice = await Invoice.findOne({ paymentId: id });
-
-    if (!payment || !invoice) {
+    if (!invoiceContext) {
       res.status(404).json({ error: 'Payment or invoice not found' });
       return;
     }
 
-    let fullTotalAmount = 0;
-    let fullRemainingBalance = 0;
-    
-    if (payment.feeAllocations && payment.feeAllocations.length > 0) {
-      payment.feeAllocations.forEach(alloc => {
-        fullTotalAmount += alloc.studentFeeId?.totalAmount || 0;
-        fullRemainingBalance += alloc.studentFeeId?.remainingAmount || 0;
-      });
-    } else if (payment.isFullPayment) {
-      const allFees = await StudentFee.find({ studentId: payment.studentId._id });
-      fullTotalAmount = allFees.reduce((sum, f) => sum + f.totalAmount, 0);
-      fullRemainingBalance = allFees.reduce((sum, f) => sum + f.remainingAmount, 0);
-    }
+    const { payment, invoice, summary } = invoiceContext;
+    const { fullRemainingBalance } = summary;
+
 
     const doc = new PDFDocument({ 
       margins: { top: 10, bottom: 5, left: 40, right: 40 }, 
@@ -275,6 +317,22 @@ export const generateInvoicePDF = async (req, res) => {
     if (!res.headersSent) {
       res.status(500).json({ error: 'Error generating PDF' });
     }
+  }
+};
+
+export const getPaymentInvoiceData = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const invoiceContext = await getInvoicePaymentData(id);
+
+    if (!invoiceContext) {
+      return res.status(404).json({ error: 'Payment or invoice not found' });
+    }
+
+    res.json(invoiceContext);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Error fetching invoice data' });
   }
 };
 
