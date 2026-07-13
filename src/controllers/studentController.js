@@ -50,8 +50,8 @@ export const assignClassDefaultFeesToStudent = async (student) => {
       const cat = validCatMap.get(catId);
       if (!cat) continue;
 
-      const isMandatory = cat.mandatory;
       const isUniform = cat.name.toLowerCase() === 'uniform';
+      const isMandatory = cat.mandatory;
 
       if (isMandatory || isUniform) {
         const feeConfig = defaultFees[catId];

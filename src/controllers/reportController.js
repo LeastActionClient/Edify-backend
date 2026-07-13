@@ -8,6 +8,7 @@ export const getDailyCollection = async (req, res) => {
     const payments = await Payment.find({ paymentDate: { $gte: today } })
       .populate('studentId', 'studentName admissionNumber')
       .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId' } })
+      .populate({ path: 'feeAllocations.studentFeeId', populate: { path: 'feeCategoryId' } })
       .populate('recordedById', 'username');
 
     const appFees = await Application.find({ feePaid: true, feePaidDate: { $gte: today } })
@@ -48,6 +49,7 @@ export const getCustomCollection = async (req, res) => {
     const payments = await Payment.find({ paymentDate: { $gte: start, $lte: end } })
       .populate('studentId', 'studentName admissionNumber')
       .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId' } })
+      .populate({ path: 'feeAllocations.studentFeeId', populate: { path: 'feeCategoryId' } })
       .populate('recordedById', 'username');
 
     const appFees = await Application.find({ feePaid: true, feePaidDate: { $gte: start, $lte: end } })
@@ -80,6 +82,7 @@ export const getMonthlyCollection = async (req, res) => {
     const payments = await Payment.find({ paymentDate: { $gte: firstDay } })
       .populate('studentId', 'studentName admissionNumber')
       .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId' } })
+      .populate({ path: 'feeAllocations.studentFeeId', populate: { path: 'feeCategoryId' } })
       .populate('recordedById', 'username');
 
     const appFees = await Application.find({ feePaid: true, feePaidDate: { $gte: firstDay } })
@@ -116,6 +119,7 @@ export const getWeeklyCollection = async (req, res) => {
     const payments = await Payment.find({ paymentDate: { $gte: firstDay } })
       .populate('studentId', 'studentName admissionNumber')
       .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId' } })
+      .populate({ path: 'feeAllocations.studentFeeId', populate: { path: 'feeCategoryId' } })
       .populate('recordedById', 'username');
 
     const appFees = await Application.find({ feePaid: true, feePaidDate: { $gte: firstDay } })
@@ -148,6 +152,7 @@ export const getYearlyCollection = async (req, res) => {
     const payments = await Payment.find({ paymentDate: { $gte: firstDay } })
       .populate('studentId', 'studentName admissionNumber')
       .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId' } })
+      .populate({ path: 'feeAllocations.studentFeeId', populate: { path: 'feeCategoryId' } })
       .populate('recordedById', 'username');
 
     const appFees = await Application.find({ feePaid: true, feePaidDate: { $gte: firstDay } })
