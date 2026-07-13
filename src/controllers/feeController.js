@@ -42,12 +42,16 @@ export const deleteFeeCategory = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const linkedFees = await StudentFee.findOne({ feeCategoryId: id });
+    const linkedActiveFees = await StudentFee.findOne({ 
+      feeCategoryId: id, 
+      $or: [ { paidAmount: { $gt: 0 } }, { remainingAmount: { $gt: 0 } } ]
+    });
 
-    if (linkedFees) {
-      return res.status(400).json({ error: 'Cannot delete this category because it is assigned to students.' });
+    if (linkedActiveFees) {
+      return res.status(400).json({ error: 'Cannot delete this category because there are payments or pending dues associated with it. Please mark it as Inactive instead.' });
     }
 
+    await StudentFee.deleteMany({ feeCategoryId: id });
     await FeeCategory.findByIdAndDelete(id);
     res.json({ message: 'Fee category deleted successfully' });
   } catch (error) {

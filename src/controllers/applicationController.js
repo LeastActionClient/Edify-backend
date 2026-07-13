@@ -65,6 +65,20 @@ export const createApplication = async (req, res) => {
 
     const applicationId = applicationNo || await generateApplicationId();
     const finalAdminNo = adminNo;
+    
+    let feeAmount = 0;
+    const isFeePaid = feePaid === true || feePaid === 'true';
+    if (isFeePaid) {
+      try {
+        const settingsPath = path.join(process.cwd(), 'settings.json');
+        if (fs.existsSync(settingsPath)) {
+          const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+          if (settings.applicationFeeAmount) {
+            feeAmount = Number(settings.applicationFeeAmount);
+          }
+        }
+      } catch (e) { console.error('Error reading settings for feeAmount', e); }
+    }
 
     const application = await Application.create({
       applicationId,
@@ -79,7 +93,9 @@ export const createApplication = async (req, res) => {
       applyingClass,
       previousSchool,
       siblings: siblings || null,
-      feePaid: feePaid === true || feePaid === 'true',
+      feePaid: isFeePaid,
+      feeAmount,
+      feePaidDate: isFeePaid ? new Date() : null,
       processedById: req.user ? req.user.id : undefined
     });
 
@@ -103,9 +119,33 @@ export const toggleFeeStatus = async (req, res) => {
     const { id } = req.params;
     const { feePaid } = req.body;
 
-    const application = await Application.findByIdAndUpdate(id, { feePaid }, { new: true });
+    const application = await Application.findById(id);
+    if (!application) {
+      return res.status(404).json({ error: 'Application not found' });
+    }
 
-    res.json({ message: 'Fee status updated successfully', application });
+    let feeAmount = application.feeAmount || 0;
+    let feePaidDate = application.feePaidDate;
+
+    if (feePaid && !application.feePaid) {
+      try {
+        const settingsPath = path.join(process.cwd(), 'settings.json');
+        if (fs.existsSync(settingsPath)) {
+          const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+          if (settings.applicationFeeAmount) {
+            feeAmount = Number(settings.applicationFeeAmount);
+          }
+        }
+      } catch (e) { console.error('Error reading settings for feeAmount', e); }
+      feePaidDate = new Date();
+    } else if (!feePaid) {
+      feeAmount = 0;
+      feePaidDate = null;
+    }
+
+    const updatedApplication = await Application.findByIdAndUpdate(id, { feePaid, feeAmount, feePaidDate }, { new: true });
+
+    res.json({ message: 'Fee status updated successfully', application: updatedApplication });
   } catch (error) {
     res.status(500).json({ error: 'Error updating fee status' });
   }

@@ -195,7 +195,6 @@ export const updateSection = async (req, res) => {
 export const deleteSection = async (req, res) => {
   try {
     const { classId, sectionId } = req.params;
-
     const existingClass = await Class.findById(classId);
     if (!existingClass) {
       res.status(404).json({ error: 'Class not found' });

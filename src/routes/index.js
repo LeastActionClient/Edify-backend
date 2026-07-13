@@ -10,6 +10,7 @@ import classRoutes from './classRoutes.js';
 import settingsRoutes from './settingsRoutes.js';
 import includedChargeRoutes from './includedChargeRoutes.js';
 import activityRoutes from './activityRoutes.js';
+import exportRoutes from './exportRoutes.js';
 
 const router = Router();
 
@@ -24,5 +25,6 @@ router.use('/classes', classRoutes);
 router.use('/settings', settingsRoutes);
 router.use('/included-charges', includedChargeRoutes);
 router.use('/activities', activityRoutes);
+router.use('/exports', exportRoutes);
 
 export default router;

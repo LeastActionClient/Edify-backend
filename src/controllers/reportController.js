@@ -1,4 +1,4 @@
-import { Student, Payment, StudentFee, FeeCategory } from '../models/index.js';
+import { Student, Payment, StudentFee, FeeCategory, Application } from '../models/index.js';
 
 export const getDailyCollection = async (req, res) => {
   try {
@@ -10,9 +10,23 @@ export const getDailyCollection = async (req, res) => {
       .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId' } })
       .populate('recordedById', 'username');
 
-    const total = payments.reduce((sum, p) => sum + p.amount, 0);
+    const appFees = await Application.find({ feePaid: true, feePaidDate: { $gte: today } })
+      .populate('processedById', 'username');
 
-    res.json({ total, payments });
+    let total = payments.reduce((sum, p) => sum + p.amount, 0);
+    total += appFees.reduce((sum, app) => sum + (app.feeAmount || 0), 0);
+
+    const formattedAppFees = appFees.map(app => ({
+      _id: app._id,
+      amount: app.feeAmount || 0,
+      paymentDate: app.feePaidDate,
+      paymentMethod: 'Cash',
+      studentId: { studentName: app.studentName, admissionNumber: app.applicationId },
+      studentFeeId: { feeCategoryId: { name: 'Application Fee' } },
+      recordedById: app.processedById
+    }));
+
+    res.json({ total, payments: [...payments, ...formattedAppFees] });
   } catch (error) {
     res.status(500).json({ error: 'Error fetching daily collection' });
   }
@@ -36,9 +50,23 @@ export const getCustomCollection = async (req, res) => {
       .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId' } })
       .populate('recordedById', 'username');
 
-    const total = payments.reduce((sum, p) => sum + p.amount, 0);
+    const appFees = await Application.find({ feePaid: true, feePaidDate: { $gte: start, $lte: end } })
+      .populate('processedById', 'username');
 
-    res.json({ total, payments });
+    let total = payments.reduce((sum, p) => sum + p.amount, 0);
+    total += appFees.reduce((sum, app) => sum + (app.feeAmount || 0), 0);
+
+    const formattedAppFees = appFees.map(app => ({
+      _id: app._id,
+      amount: app.feeAmount || 0,
+      paymentDate: app.feePaidDate,
+      paymentMethod: 'Cash',
+      studentId: { studentName: app.studentName, admissionNumber: app.applicationId },
+      studentFeeId: { feeCategoryId: { name: 'Application Fee' } },
+      recordedById: app.processedById
+    }));
+
+    res.json({ total, payments: [...payments, ...formattedAppFees] });
   } catch (error) {
     res.status(500).json({ error: 'Error fetching custom collection' });
   }
@@ -54,9 +82,23 @@ export const getMonthlyCollection = async (req, res) => {
       .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId' } })
       .populate('recordedById', 'username');
 
-    const total = payments.reduce((sum, p) => sum + p.amount, 0);
+    const appFees = await Application.find({ feePaid: true, feePaidDate: { $gte: firstDay } })
+      .populate('processedById', 'username');
 
-    res.json({ total, payments });
+    let total = payments.reduce((sum, p) => sum + p.amount, 0);
+    total += appFees.reduce((sum, app) => sum + (app.feeAmount || 0), 0);
+
+    const formattedAppFees = appFees.map(app => ({
+      _id: app._id,
+      amount: app.feeAmount || 0,
+      paymentDate: app.feePaidDate,
+      paymentMethod: 'Cash',
+      studentId: { studentName: app.studentName, admissionNumber: app.applicationId },
+      studentFeeId: { feeCategoryId: { name: 'Application Fee' } },
+      recordedById: app.processedById
+    }));
+
+    res.json({ total, payments: [...payments, ...formattedAppFees] });
   } catch (error) {
     res.status(500).json({ error: 'Error fetching monthly collection' });
   }
@@ -76,8 +118,23 @@ export const getWeeklyCollection = async (req, res) => {
       .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId' } })
       .populate('recordedById', 'username');
 
-    const total = payments.reduce((sum, p) => sum + p.amount, 0);
-    res.json({ total, payments });
+    const appFees = await Application.find({ feePaid: true, feePaidDate: { $gte: firstDay } })
+      .populate('processedById', 'username');
+
+    let total = payments.reduce((sum, p) => sum + p.amount, 0);
+    total += appFees.reduce((sum, app) => sum + (app.feeAmount || 0), 0);
+
+    const formattedAppFees = appFees.map(app => ({
+      _id: app._id,
+      amount: app.feeAmount || 0,
+      paymentDate: app.feePaidDate,
+      paymentMethod: 'Cash',
+      studentId: { studentName: app.studentName, admissionNumber: app.applicationId },
+      studentFeeId: { feeCategoryId: { name: 'Application Fee' } },
+      recordedById: app.processedById
+    }));
+
+    res.json({ total, payments: [...payments, ...formattedAppFees] });
   } catch (error) {
     res.status(500).json({ error: 'Error fetching weekly collection' });
   }
@@ -93,8 +150,23 @@ export const getYearlyCollection = async (req, res) => {
       .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId' } })
       .populate('recordedById', 'username');
 
-    const total = payments.reduce((sum, p) => sum + p.amount, 0);
-    res.json({ total, payments });
+    const appFees = await Application.find({ feePaid: true, feePaidDate: { $gte: firstDay } })
+      .populate('processedById', 'username');
+
+    let total = payments.reduce((sum, p) => sum + p.amount, 0);
+    total += appFees.reduce((sum, app) => sum + (app.feeAmount || 0), 0);
+
+    const formattedAppFees = appFees.map(app => ({
+      _id: app._id,
+      amount: app.feeAmount || 0,
+      paymentDate: app.feePaidDate,
+      paymentMethod: 'Cash',
+      studentId: { studentName: app.studentName, admissionNumber: app.applicationId },
+      studentFeeId: { feeCategoryId: { name: 'Application Fee' } },
+      recordedById: app.processedById
+    }));
+
+    res.json({ total, payments: [...payments, ...formattedAppFees] });
   } catch (error) {
     res.status(500).json({ error: 'Error fetching yearly collection' });
   }

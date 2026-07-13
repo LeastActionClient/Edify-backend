@@ -14,3 +14,4 @@ export { default as IncludedChargeStockTransaction } from './IncludedChargeStock
 export { default as Activity } from './Activity.js';
 export { default as StudentIncludedCharge } from './StudentIncludedCharge.js';
 export { default as StudentActivity } from './StudentActivity.js';
+export { default as ExportLog } from './ExportLog.js';
