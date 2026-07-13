@@ -1,5 +1,28 @@
 import { FeeCategory, StudentFee, Student, Class, Section } from '../models/index.js';
 
+const recalculateStudentTotals = async (studentId) => {
+  const student = await Student.findById(studentId);
+  if (!student) return;
+
+  const updatedStudentFees = await StudentFee.find({ studentId }).populate('feeCategoryId');
+  let baseFeeTotal = 0;
+  let grandTotal = 0;
+
+  for (const f of updatedStudentFees) {
+    const isMandatory = f.feeCategoryId?.mandatory || false;
+    const amt = f.totalAmount || 0;
+    if (isMandatory) baseFeeTotal += amt;
+    grandTotal += amt;
+  }
+
+  grandTotal += (student.includedChargesTotal || 0) + (student.activitiesTotal || 0);
+
+  await Student.findByIdAndUpdate(studentId, {
+    baseFee: baseFeeTotal,
+    grandTotal: grandTotal
+  });
+};
+
 export const getFeeCategories = async (req, res) => {
   try {
     const categories = await FeeCategory.find().sort({ name: 1 });
@@ -91,7 +114,7 @@ export const assignFeeToStudent = async (req, res) => {
         studentFee._id,
         {
           totalAmount: parseFloat(totalAmount),
-          remainingAmount: parseFloat(totalAmount) - studentFee.paidAmount
+          remainingAmount: Math.max(0, parseFloat(totalAmount) - studentFee.paidAmount)
         },
         { new: true }
       ).populate('feeCategoryId');
@@ -100,6 +123,9 @@ export const assignFeeToStudent = async (req, res) => {
         const idsToDelete = existingFees.slice(1).map(f => f._id);
         await StudentFee.deleteMany({ _id: { $in: idsToDelete } });
       }
+      
+      // Recalculate totals
+      await recalculateStudentTotals(studentId);
       return res.status(201).json(studentFee);
     } else {
       let studentFee = await StudentFee.create({
@@ -111,6 +137,9 @@ export const assignFeeToStudent = async (req, res) => {
         academicYear: student.academicYear
       });
       studentFee = await StudentFee.findById(studentFee._id).populate('feeCategoryId');
+      
+      // Recalculate totals
+      await recalculateStudentTotals(studentId);
       return res.status(201).json(studentFee);
     }
   } catch (error) {
@@ -256,6 +285,8 @@ export const assignBulkFee = async (req, res) => {
         }
         grandTotal += amt;
       }
+
+      grandTotal += (student.includedChargesTotal || 0) + (student.activitiesTotal || 0);
 
       await Student.findByIdAndUpdate(studentId, {
         baseFee: baseFeeTotal,

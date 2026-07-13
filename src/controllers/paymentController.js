@@ -4,8 +4,19 @@ import path from 'path';
 import fs from 'fs';
 
 const generateInvoiceNumber = async () => {
-  const count = await Invoice.countDocuments();
-  return `INV-${new Date().getFullYear()}-${String(count + 1).padStart(5, '0')}`;
+  const currentYear = new Date().getFullYear();
+  // Find the invoice with the highest number for the current year
+  const lastInvoice = await Invoice.findOne({ invoiceNumber: new RegExp(`^INV-${currentYear}-`) })
+    .sort({ invoiceNumber: -1 });
+
+  let nextCount = 1;
+  if (lastInvoice && lastInvoice.invoiceNumber) {
+    const parts = lastInvoice.invoiceNumber.split('-');
+    if (parts.length === 3) {
+      nextCount = parseInt(parts[2], 10) + 1;
+    }
+  }
+  return `INV-${currentYear}-${String(nextCount).padStart(5, '0')}`;
 };
 
 const getInvoicePaymentData = async (id) => {
