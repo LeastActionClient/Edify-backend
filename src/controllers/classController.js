@@ -77,3 +77,51 @@ export const createSection = async (req, res) => {
     res.status(500).json({ error: 'Error creating section' });
   }
 };
+
+export const deleteClass = async (req, res) => {
+  try {
+    const classId = req.params.classId;
+    const existingClass = await Class.findById(classId);
+    if (!existingClass) {
+      return res.status(404).json({ error: 'Class not found' });
+    }
+
+    await Section.deleteMany({ classId });
+    await Class.findByIdAndDelete(classId);
+
+    await ActivityLog.create({
+      userId: req.user.id,
+      action: 'DELETED_CLASS',
+      details: `Class ${existingClass.name} and its sections deleted`
+    });
+
+    res.json({ message: 'Class deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ error: 'Error deleting class' });
+  }
+};
+
+export const deleteSection = async (req, res) => {
+  try {
+    const { classId, sectionId } = req.params;
+    
+    const section = await Section.findOne({ _id: sectionId, classId });
+    if (!section) {
+      return res.status(404).json({ error: 'Section not found' });
+    }
+
+    const existingClass = await Class.findById(classId);
+
+    await Section.findByIdAndDelete(sectionId);
+
+    await ActivityLog.create({
+      userId: req.user.id,
+      action: 'DELETED_SECTION',
+      details: `Section ${section.name} deleted from Class ${existingClass?.name || classId}`
+    });
+
+    res.json({ message: 'Section deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ error: 'Error deleting section' });
+  }
+};

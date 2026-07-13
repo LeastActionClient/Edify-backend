@@ -25,6 +25,7 @@ export const authenticate = async (req, res, next) => {
 
     next();
   } catch (ex) {
+    console.error("Auth Error:", ex);
     res.status(401).json({ error: 'Invalid token.' });
   }
 };
@@ -35,4 +36,14 @@ export const authorizeSuperAdmin = (req, res, next) => {
     return;
   }
   next();
+};
+
+export const authorize = (...roles) => {
+  return (req, res, next) => {
+    if (!req.user || !roles.includes(req.user.role)) {
+      res.status(403).json({ error: 'Access denied. Insufficient permissions.' });
+      return;
+    }
+    next();
+  };
 };
