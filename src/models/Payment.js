@@ -1,7 +1,9 @@
 import mongoose from 'mongoose';
 
 const paymentSchema = new mongoose.Schema({
-  studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
+  studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student' },
+  applicationId: { type: mongoose.Schema.Types.ObjectId, ref: 'Application' },
+  paymentType: { type: String, enum: ['FEE', 'APPLICATION'], default: 'FEE' },
   studentFeeId: { type: mongoose.Schema.Types.ObjectId, ref: 'StudentFee' }, // Optional for full payments
   isFullPayment: { type: Boolean, default: false },
   feeAllocations: [{

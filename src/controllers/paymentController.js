@@ -161,6 +161,7 @@ export const getPaymentHistory = async (req, res) => {
   try {
     const payments = await Payment.find()
       .populate('studentId', 'studentName admissionNumber currentClass section')
+      .populate('applicationId', 'studentName applicationId applyingClass')
       .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId' } })
       .populate({ path: 'feeAllocations.studentFeeId', populate: { path: 'feeCategoryId' } })
       .populate('recordedById', 'username')
@@ -178,6 +179,9 @@ export const getPaymentHistory = async (req, res) => {
       pObj.invoice = invoiceMap[p._id.toString()] || null;
       if (pObj.studentId) {
         pObj.student = pObj.studentId;
+      }
+      if (pObj.applicationId) {
+        pObj.application = pObj.applicationId;
       }
       if (pObj.studentFeeId) {
         pObj.studentFee = pObj.studentFeeId;

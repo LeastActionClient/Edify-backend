@@ -1,4 +1,4 @@
-import { Application, Student, ActivityLog, Class, Section, StudentFee } from '../models/index.js';
+import { Application, Student, ActivityLog, Class, Section, StudentFee, Payment } from '../models/index.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -80,31 +80,59 @@ export const createApplication = async (req, res) => {
       } catch (e) { console.error('Error reading settings for feeAmount', e); }
     }
 
-    const application = await Application.create({
-      applicationId,
-      adminNo: finalAdminNo,
-      studentName,
-      parentName,
-      fatherName,
-      motherName,
-      fatherPhone,
-      motherPhone,
-      address,
-      applyingClass,
-      previousSchool,
-      siblings: siblings || null,
-      feePaid: isFeePaid,
-      feeAmount,
-      feePaidDate: isFeePaid ? new Date() : null,
-      processedById: req.user ? req.user.id : undefined
-    });
+    let application;
+    try {
+      application = await Application.create({
+        applicationId,
+        adminNo: finalAdminNo,
+        studentName,
+        parentName,
+        fatherName,
+        motherName,
+        fatherPhone,
+        motherPhone,
+        address,
+        applyingClass,
+        previousSchool,
+        siblings: siblings || null,
+        feePaid: isFeePaid,
+        feeAmount,
+        feePaidDate: isFeePaid ? new Date() : null,
+        processedById: req.user ? req.user.id : undefined
+      });
+    } catch (createErr) {
+      if (createErr.code === 11000) {
+        return res.status(400).json({ error: 'Application number already exists. Please use a unique application number.' });
+      }
+      throw createErr;
+    }
+
+    if (isFeePaid && feeAmount > 0) {
+      try {
+        await Payment.create({
+          applicationId: application._id,
+          paymentType: 'APPLICATION',
+          amount: feeAmount,
+          paymentMethod: 'CASH',
+          status: 'PAID',
+          remarks: 'Application Fee for ' + applicationId,
+          recordedById: req.user ? req.user.id : undefined
+        });
+      } catch (paymentErr) {
+        console.error('Failed to record application fee payment:', paymentErr);
+      }
+    }
 
     if (req.user) {
-      await ActivityLog.create({
-        userId: req.user.id,
-        action: 'CREATED_APPLICATION',
-        details: `Application ${applicationId} created for ${studentName}`
-      });
+      try {
+        await ActivityLog.create({
+          userId: req.user.id,
+          action: 'CREATED_APPLICATION',
+          details: `Application ${applicationId} created for ${studentName}`
+        });
+      } catch (logErr) {
+        console.error('Failed to create activity log:', logErr);
+      }
     }
 
     res.status(201).json(application);
