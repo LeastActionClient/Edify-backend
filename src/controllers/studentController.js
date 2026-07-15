@@ -277,6 +277,30 @@ const getClassDefaultFees = async (currentClass, section) => {
   return defaultFees;
 };
 
+const validateStudentInput = ({ caste, emisNo, emisNumber, guardianName, guardian, whatsappNumber }) => {
+  const casteVal = (caste || '').trim();
+  if (casteVal && (!/^[a-zA-Z\s]+$/.test(casteVal) || casteVal.length > 50)) {
+    return 'Caste must contain only alphabets and spaces (maximum 50 characters).';
+  }
+
+  const emisVal = (emisNo || emisNumber || '').trim();
+  if (emisVal && !/^\d{10}$/.test(emisVal)) {
+    return 'EMIS No must be exactly 10 digits.';
+  }
+
+  const guardianVal = (guardianName || guardian || '').trim();
+  if (guardianVal && (!/^[a-zA-Z\s]+$/.test(guardianVal) || guardianVal.length > 100)) {
+    return 'Guardian Name must contain only alphabets and spaces (maximum 100 characters).';
+  }
+
+  const waVal = (whatsappNumber || '').trim();
+  if (waVal && !/^\d{10}$/.test(waVal)) {
+    return 'WhatsApp Number must be exactly 10 digits.';
+  }
+
+  return null;
+};
+
 export const addStudentManually = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -286,7 +310,7 @@ export const addStudentManually = async (req, res) => {
       studentName, fatherName, motherName, fatherPhone, motherPhone, address, 
       currentClass, section, admissionNumber: reqAdmissionNumber,
       dateOfBirth, gender, bloodGroup, aadhaarNumber, religion, community, caste, RTE, nationality,
-      fatherOccupation, motherOccupation, guardian, city, state, pincode, whatsappNumber, emisNumber,
+      fatherOccupation, motherOccupation, guardian, guardianName, city, state, pincode, whatsappNumber, emisNumber, emisNo,
       applicationId, includedChargesIds = [], activitiesIds = []
     } = req.body;
 
@@ -297,6 +321,12 @@ export const addStudentManually = async (req, res) => {
 
     if (!reqAdmissionNumber) {
       res.status(400).json({ error: 'Admission Number is required' });
+      return;
+    }
+
+    const valError = validateStudentInput({ caste, emisNo, emisNumber, guardianName, guardian, whatsappNumber });
+    if (valError) {
+      res.status(400).json({ error: valError });
       return;
     }
 
@@ -331,17 +361,19 @@ export const addStudentManually = async (req, res) => {
       aadhaarNumber: aadhaarNumber || '',
       religion: religion || '',
       community: community || '',
-      caste: caste || '',
+      caste: (caste || '').trim(),
       RTE: RTE || '',
       nationality: nationality || '',
       fatherOccupation: fatherOccupation || '',
       motherOccupation: motherOccupation || '',
-      guardian: guardian || '',
+      guardian: (guardianName || guardian || '').trim(),
+      guardianName: (guardianName || guardian || '').trim(),
       city: city || '',
       state: state || '',
       pincode: pincode || '',
-      whatsappNumber: whatsappNumber || '',
-      emisNumber: emisNumber || '',
+      whatsappNumber: (whatsappNumber || '').trim(),
+      emisNumber: (emisNo || emisNumber || '').trim(),
+      emisNo: (emisNo || emisNumber || '').trim(),
       currentClass,
       section,
       addedById: req.user?.id,
@@ -491,6 +523,37 @@ export const bulkImportStudents = async (req, res) => {
         continue;
       }
 
+      const casteVal = String(row['Caste'] || row['caste'] || '').trim();
+      const emisNoVal = String(row['EMIS No'] || row['emisNo'] || row['EMIS Number'] || row['emisNumber'] || row['EMIS'] || row['emis'] || '').trim();
+      const guardianNameVal = String(row['Guardian Name'] || row['guardianName'] || row['Guardian'] || row['guardian'] || '').trim();
+      const whatsappNumberVal = String(row['WhatsApp Number'] || row['whatsappNumber'] || row['WhatsApp No'] || row['whatsappNo'] || row['Whatsapp Number'] || row['Whatsapp No'] || '').trim();
+
+      let hasRowError = false;
+
+      if (casteVal && (!/^[a-zA-Z\s]+$/.test(casteVal) || casteVal.length > 50)) {
+        errors.push(`Row ${i + 2}: Caste must contain only alphabets and spaces (maximum 50 characters).`);
+        hasRowError = true;
+      }
+
+      if (emisNoVal && !/^\d{10}$/.test(emisNoVal)) {
+        errors.push(`Row ${i + 2}: EMIS No must be exactly 10 digits.`);
+        hasRowError = true;
+      }
+
+      if (guardianNameVal && (!/^[a-zA-Z\s]+$/.test(guardianNameVal) || guardianNameVal.length > 100)) {
+        errors.push(`Row ${i + 2}: Guardian Name must contain only alphabets and spaces (maximum 100 characters).`);
+        hasRowError = true;
+      }
+
+      if (whatsappNumberVal && !/^\d{10}$/.test(whatsappNumberVal)) {
+        errors.push(`Row ${i + 2}: WhatsApp Number must be exactly 10 digits.`);
+        hasRowError = true;
+      }
+
+      if (hasRowError) {
+        continue;
+      }
+
       try {
         const student = await Student.create({
           admissionNumber: String(admissionNumber),
@@ -505,18 +568,20 @@ export const bulkImportStudents = async (req, res) => {
           aadhaarNumber: String(row['Aadhar No'] || row['Aadhaar Number'] || row['aadhaarNumber'] || ''),
           religion: String(row['Religion'] || row['religion'] || ''),
           community: String(row['Community'] || row['community'] || ''),
-          caste: String(row['Caste'] || row['caste'] || ''),
+          caste: casteVal,
           RTE: String(row['RTE'] || row['RTE'] || ''),
           nationality: String(row['Nationality'] || row['nationality'] || ''),
           fatherOccupation: String(row['Father Occupation'] || row['fatherOccupation'] || ''),
           motherOccupation: String(row['Mother Occupation'] || row['motherOccupation'] || ''),
-          guardian: String(row['Guardian Name'] || row['guardian'] || ''),
+          guardian: guardianNameVal,
+          guardianName: guardianNameVal,
           city: String(row['City'] || row['city'] || ''),
           state: String(row['State'] || row['state'] || ''),
           pincode: String(row['Pincode'] || row['pincode'] || ''),
           dateOfBirth: (row['Date of Birth'] || row['DOB']) ? new Date(row['Date of Birth'] || row['DOB']) : null,
-          whatsappNumber: String(row['Whatsapp Number'] || row['whatsappNumber'] || row['Whatsapp No'] || ''),
-          emisNumber: String(row['EMIS No'] || row['emisNumber'] || row['EMIS Number'] || ''),
+          whatsappNumber: whatsappNumberVal,
+          emisNumber: emisNoVal,
+          emisNo: emisNoVal,
           currentClass,
           section: section || null,
           addedById: req.user?.id
@@ -625,7 +690,7 @@ export const updateStudent = async (req, res) => {
       bloodGroup,
       aadhaarNumber,
       religion,
-      community,
+      caste,
       nationality,
       email,
       rollNumber,
@@ -635,12 +700,16 @@ export const updateStudent = async (req, res) => {
       fatherOccupation,
       motherOccupation,
       guardian,
+      guardianName,
       city,
       state,
       pincode,
       photoUrl,
       RTE,
       isRTE,
+      whatsappNumber,
+      emisNumber,
+      emisNo,
       baseFee,
       includedChargesTotal,
       activitiesTotal,
@@ -648,6 +717,11 @@ export const updateStudent = async (req, res) => {
       includedChargesIds,
       activitiesIds
     } = req.body;
+
+    const valError = validateStudentInput({ caste, emisNo, emisNumber, guardianName, guardian, whatsappNumber });
+    if (valError) {
+      return res.status(400).json({ error: valError });
+    }
 
     const currentStudent = await Student.findById(id);
     if (!currentStudent) {
@@ -811,6 +885,7 @@ export const updateStudent = async (req, res) => {
       aadhaarNumber,
       religion,
       community,
+      caste: (caste !== undefined ? caste.trim() : currentStudent.caste) || '',
       nationality,
       email,
       rollNumber,
@@ -818,7 +893,11 @@ export const updateStudent = async (req, res) => {
       studentStatus,
       fatherOccupation,
       motherOccupation,
-      guardian,
+      guardian: (guardianName !== undefined || guardian !== undefined ? (guardianName || guardian).trim() : currentStudent.guardian) || '',
+      guardianName: (guardianName !== undefined || guardian !== undefined ? (guardianName || guardian).trim() : (currentStudent.guardianName || currentStudent.guardian)) || '',
+      whatsappNumber: (whatsappNumber !== undefined ? whatsappNumber.trim() : currentStudent.whatsappNumber) || '',
+      emisNumber: (emisNo !== undefined || emisNumber !== undefined ? (emisNo || emisNumber).trim() : currentStudent.emisNumber) || '',
+      emisNo: (emisNo !== undefined || emisNumber !== undefined ? (emisNo || emisNumber).trim() : (currentStudent.emisNo || currentStudent.emisNumber)) || '',
       city,
       state,
       pincode,

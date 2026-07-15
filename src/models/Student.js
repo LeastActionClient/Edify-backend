@@ -29,6 +29,7 @@ const studentSchema = new mongoose.Schema({
   fatherOccupation: { type: String },
   motherOccupation: { type: String },
   guardian: { type: String },
+  guardianName: { type: String },
   city: { type: String },
   state: { type: String },
   pincode: { type: String },
@@ -38,6 +39,7 @@ const studentSchema = new mongoose.Schema({
   grandTotal: { type: Number },
   whatsappNumber: { type: String },
   emisNumber: { type: String },
+  emisNo: { type: String },
   caste: { type: String },
   RTE: { type: String }
 }, { timestamps: true });

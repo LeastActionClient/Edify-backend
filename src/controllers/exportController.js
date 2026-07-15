@@ -173,7 +173,8 @@ export const exportStudents = async (req, res) => {
 
         sheets['Student Details'].push({
           ...baseInfo,
-          'EMIS Number': student.emisNumber || '',
+          'EMIS No': student.emisNo || student.emisNumber || '',
+          'EMIS Number': student.emisNo || student.emisNumber || '',
           'DOB': student.dateOfBirth ? new Date(student.dateOfBirth).toLocaleDateString() : '',
           'Gender': student.gender || '',
           'Blood Group': student.bloodGroup || '',
@@ -194,7 +195,8 @@ export const exportStudents = async (req, res) => {
           'Mother Name': student.motherName || '',
           'Mother Occupation': student.motherOccupation || '',
           'Mother Phone': student.motherPhone || '',
-          'Guardian Name': student.guardian || '',
+          'Guardian Name': student.guardianName || student.guardian || '',
+          'WhatsApp Number': student.whatsappNumber || '',
           'Address': student.address || '',
           'City': student.city || '',
           'State': student.state || '',
@@ -203,6 +205,7 @@ export const exportStudents = async (req, res) => {
 
         sheets['Academic History'].push({
           ...baseInfo,
+          'EMIS No': student.emisNo || student.emisNumber || '',
           'Academic Year Joined': student.academicYear || '',
           'Admission Date': student.admissionDate ? new Date(student.admissionDate).toLocaleDateString() : '',
           'Current Class': student.currentClass || '',
@@ -304,10 +307,12 @@ export const exportStudents = async (req, res) => {
         doc.fontSize(14).fillColor('#ea580c').text('Student Information');
         doc.fillColor('black').fontSize(10).moveDown(0.5);
         doc.text(`Admission Number: ${student.admissionNumber}`);
+        doc.text(`EMIS No: ${student.emisNo || student.emisNumber || 'N/A'}`);
         doc.text(`Name: ${student.studentName}`);
         doc.text(`Class & Section: ${student.currentClass} ${student.section || ''}`);
         doc.text(`DOB: ${student.dateOfBirth ? new Date(student.dateOfBirth).toLocaleDateString() : 'N/A'}`);
         doc.text(`Gender: ${student.gender || 'N/A'}`);
+        doc.text(`Caste: ${student.caste || 'N/A'}`);
         doc.text(`Aadhaar: ${student.aadhaarNumber || 'N/A'}`);
         doc.text(`Status: ${student.studentStatus || 'Active'}`);
         doc.moveDown(1.5);
@@ -318,6 +323,8 @@ export const exportStudents = async (req, res) => {
         doc.text(`Father's Name: ${student.fatherName || 'N/A'}`);
         doc.text(`Father's Phone: ${student.fatherPhone || 'N/A'}`);
         doc.text(`Mother's Name: ${student.motherName || 'N/A'}`);
+        doc.text(`Guardian Name: ${student.guardianName || student.guardian || 'N/A'}`);
+        doc.text(`WhatsApp Number: ${student.whatsappNumber || 'N/A'}`);
         doc.text(`Address: ${student.address || 'N/A'}`);
         doc.moveDown(1.5);
 
