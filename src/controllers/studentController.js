@@ -213,6 +213,13 @@ export const getStudentById = async (req, res) => {
           const bottomLen = parseFloat(f.uniformDetails?.bottomLength || 0);
           healedAmt = (topLen * topPrice) + (bottomLen * bottomPrice);
         }
+        if (healedAmt <= 0) {
+          const classDoc = await Class.findOne({ name: f.className || student.currentClass });
+          const feeConfig = classDoc?.defaultFees?.[cat._id.toString()];
+          if (typeof feeConfig === 'number' && feeConfig > 0) healedAmt = feeConfig;
+          else if (feeConfig?.amount && parseFloat(feeConfig.amount) > 0) healedAmt = parseFloat(feeConfig.amount);
+          else healedAmt = 100;
+        }
         if (healedAmt > 0) {
           f.totalAmount = healedAmt;
           f.remainingAmount = healedAmt;
