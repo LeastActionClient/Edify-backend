@@ -19,6 +19,307 @@ const generateInvoiceNumber = async () => {
   return `INV-${currentYear}-${String(nextCount).padStart(5, '0')}`;
 };
 
+const MM_TO_PT = 72 / 25.4;
+const mmToPt = (value) => value * MM_TO_PT;
+
+const toNumber = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const normalizeSpaces = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+
+const titleCase = (value) =>
+  normalizeSpaces(value)
+    .toLowerCase()
+    .split(' ')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+
+const splitFeeName = (value) => {
+  const rawName = normalizeSpaces(value);
+  const match = rawName.match(/^(.*?)(?:\s*-?\s*)(\d{1,2})$/i);
+
+  if (!match || !normalizeSpaces(match[1])) {
+    return {
+      rawName,
+      baseName: rawName,
+      suffix: null,
+      isGroupedCandidate: false
+    };
+  }
+
+  return {
+    rawName,
+    baseName: normalizeSpaces(match[1]),
+    suffix: Number(match[2]),
+    isGroupedCandidate: true
+  };
+};
+
+const buildReceiptEntry = (source, fallbackAmount = 0) => {
+  const fee = source?.studentFeeId || source?.studentFee || source || {};
+  const feeName = fee.feeCategoryId?.name || fee.name || 'Fee';
+  const totalAmount = toNumber(fee.totalAmount);
+  const paidAmount = toNumber(source?.amount ?? fallbackAmount);
+  const balanceAmount = toNumber(fee.remainingAmount);
+  const discountAmount = toNumber(
+    source?.discountAmount ??
+      source?.lessAmount ??
+      source?.concessionAmount ??
+      fee.discountAmount ??
+      fee.lessAmount ??
+      fee.concessionAmount
+  );
+
+  return {
+    rawName: feeName,
+    displayName: titleCase(feeName),
+    totalAmount,
+    paidAmount,
+    balanceAmount: Number.isFinite(balanceAmount) && balanceAmount >= 0 ? balanceAmount : 0,
+    discountAmount
+  };
+};
+
+const groupFeeAllocationsForReceipt = (payment) => {
+  const feeAllocations = Array.isArray(payment?.feeAllocations) ? payment.feeAllocations : [];
+  const studentFee = payment?.studentFee || payment?.studentFeeId || null;
+
+  const entries = feeAllocations.length > 0
+    ? feeAllocations.map((allocation) => buildReceiptEntry(allocation))
+    : studentFee
+      ? [buildReceiptEntry(studentFee, payment?.amount)]
+      : [];
+
+  const grouped = [];
+  const groupedMap = new Map();
+
+  entries.forEach((entry, index) => {
+    const { baseName, suffix, isGroupedCandidate } = splitFeeName(entry.rawName);
+    const groupKey = isGroupedCandidate ? normalizeSpaces(baseName).toLowerCase() : `__single_${index}`;
+
+    if (!groupedMap.has(groupKey)) {
+      const group = {
+        baseName: titleCase(baseName),
+        displayName: entry.displayName,
+        terms: [],
+        rows: [],
+        totalAmount: 0,
+        discountAmount: 0,
+        paidAmount: 0,
+        balanceAmount: 0,
+        sortIndex: index
+      };
+      groupedMap.set(groupKey, group);
+      grouped.push(group);
+    }
+
+    const group = groupedMap.get(groupKey);
+    group.rows.push(entry);
+    group.totalAmount += entry.totalAmount;
+    group.discountAmount += entry.discountAmount;
+    group.paidAmount += entry.paidAmount;
+    group.balanceAmount += entry.balanceAmount;
+
+    if (suffix !== null && suffix !== undefined && Number.isFinite(suffix)) {
+      group.terms.push(suffix);
+    }
+  });
+
+  return grouped.map((group) => {
+    const sortedTerms = [...new Set(group.terms)].sort((a, b) => a - b);
+    const shouldCollapse = sortedTerms.length > 1;
+
+    return {
+      name: group.baseName || group.displayName,
+      displayName: shouldCollapse
+        ? `${group.baseName || group.displayName} - ${sortedTerms.join(',')}`
+        : group.rows[0]?.displayName || group.displayName,
+      terms: sortedTerms,
+      totalAmount: group.totalAmount,
+      discountAmount: group.discountAmount,
+      paidAmount: group.paidAmount,
+      balanceAmount: group.balanceAmount,
+      rows: group.rows,
+      sortIndex: group.sortIndex
+    };
+  });
+};
+
+const calculateReceiptTotals = (groupedRows) =>
+  groupedRows.reduce(
+    (acc, row) => ({
+      totalAmount: acc.totalAmount + toNumber(row.totalAmount),
+      discountAmount: acc.discountAmount + toNumber(row.discountAmount),
+      paidAmount: acc.paidAmount + toNumber(row.paidAmount),
+      balanceAmount: acc.balanceAmount + toNumber(row.balanceAmount)
+    }),
+    {
+      totalAmount: 0,
+      discountAmount: 0,
+      paidAmount: 0,
+      balanceAmount: 0
+    }
+  );
+
+const formatReceiptCurrency = (value) => `Rs. ${toNumber(value).toFixed(2)}`;
+const formatReceiptDate = (value) => {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '-';
+  return date.toLocaleDateString();
+};
+
+const drawReceiptCopy = ({
+  doc,
+  payment,
+  invoice,
+  groupedRows,
+  totals,
+  x,
+  y,
+  width,
+  height,
+  logoPath
+}) => {
+  const paddingX = mmToPt(2);
+  const paddingY = mmToPt(1.5);
+  const innerX = x + paddingX;
+  const innerY = y + paddingY;
+  const innerWidth = width - paddingX * 2;
+  const descWidth = Math.round(innerWidth * 0.38);
+  const totalWidth = Math.round(innerWidth * 0.13);
+  const lessWidth = Math.round(innerWidth * 0.11);
+  const paidWidth = Math.round(innerWidth * 0.13);
+  const balanceWidth = innerWidth - descWidth - totalWidth - lessWidth - paidWidth;
+  const rowHeight = mmToPt(4.2);
+
+  const student = payment.studentId || payment.student || {};
+  const receiptNumber = invoice?.invoiceNumber || payment._id?.toString?.() || '-';
+  const receiptDate = formatReceiptDate(payment.paymentDate);
+
+  doc.save();
+  doc.roundedRect(x, y, width, height, 2)
+    .lineWidth(0.5)
+    .strokeColor('#CBD5E1')
+    .stroke();
+
+  if (logoPath && fs.existsSync(logoPath)) {
+    try {
+      const svgCode = fs.readFileSync(logoPath, 'utf8');
+      doc.save();
+      doc.translate(innerX, innerY);
+      SVGtoPDF(doc, svgCode, 0, 0, {
+        assumePt: true,
+        width: mmToPt(12),
+        height: mmToPt(12)
+      });
+      doc.restore();
+    } catch (imageError) {
+      console.error('Error loading receipt logo', imageError);
+    }
+  }
+
+  const textX = innerX + mmToPt(14);
+  doc.fillColor('#0F172A').font('Helvetica-Bold').fontSize(9.5)
+    .text('KASTHURI NURSERY AND PRIMARY SCHOOL', textX, innerY, { width: innerWidth - mmToPt(70) });
+
+  doc.fillColor('#475569').font('Helvetica').fontSize(7.2)
+    .text('No.15 & 44 Eda Street, Saidapet, Vellore - 632 012.', textX, innerY + mmToPt(4.8), { width: innerWidth - mmToPt(70) })
+    .text('Phone: 0416-2211877, +91 97919 50179 | Email: Kasthurinurseryschool@gmail.com', textX, innerY + mmToPt(8.2), { width: innerWidth - mmToPt(70) });
+
+  doc.fillColor('#0F172A').font('Helvetica-Bold').fontSize(10.5)
+    .text('FEE RECEIPT', innerX + innerWidth - mmToPt(40), innerY + mmToPt(1), { width: mmToPt(38), align: 'right' });
+
+  const headerBottom = innerY + mmToPt(14.5);
+  doc.moveTo(innerX, headerBottom).lineTo(innerX + innerWidth, headerBottom).strokeColor('#CBD5E1').stroke();
+
+  const detailTop = headerBottom + mmToPt(1.8);
+  const leftColX = innerX;
+  const rightColX = innerX + innerWidth / 2 + mmToPt(1);
+  const lineGap = mmToPt(4.2);
+
+  doc.fillColor('#0F172A').font('Helvetica').fontSize(8.2);
+  doc.text(`Admission No: ${student.admissionNumber || '-'}`, leftColX, detailTop, { width: innerWidth / 2 - mmToPt(2) });
+  doc.text(`Receipt No: ${receiptNumber}`, leftColX, detailTop + lineGap, { width: innerWidth / 2 - mmToPt(2) });
+  doc.text(`Student Name: ${student.studentName || '-'}`, leftColX, detailTop + lineGap * 2, { width: innerWidth / 2 - mmToPt(2) });
+
+  doc.text(`Class & Section: ${student.currentClass || '-'} ${student.section || ''}`, rightColX, detailTop, { width: innerWidth / 2 - mmToPt(2), align: 'right' });
+  doc.text(`Date: ${receiptDate}`, rightColX, detailTop + lineGap, { width: innerWidth / 2 - mmToPt(2), align: 'right' });
+  doc.text(`Payment Mode: ${payment.paymentMethod || '-'}`, rightColX, detailTop + lineGap * 2, { width: innerWidth / 2 - mmToPt(2), align: 'right' });
+
+  const tableTop = detailTop + lineGap * 3 + mmToPt(1.8);
+  const tableHeaderHeight = mmToPt(4.8);
+  const tableWidth = innerWidth;
+
+  doc.roundedRect(innerX, tableTop, tableWidth, tableHeaderHeight + groupedRows.length * rowHeight, 1.5)
+    .lineWidth(0.4)
+    .strokeColor('#CBD5E1')
+    .stroke();
+
+  doc.rect(innerX, tableTop, tableWidth, tableHeaderHeight)
+    .fillAndStroke('#F1F5F9', '#CBD5E1');
+
+  doc.fillColor('#334155').font('Helvetica-Bold').fontSize(7.6);
+  doc.text('Fee Description', innerX + mmToPt(1.2), tableTop + mmToPt(1.2), { width: descWidth - mmToPt(2), ellipsis: true });
+  doc.text('Total', innerX + descWidth, tableTop + mmToPt(1.2), { width: totalWidth, align: 'right' });
+  doc.text('Less', innerX + descWidth + totalWidth, tableTop + mmToPt(1.2), { width: lessWidth, align: 'right' });
+  doc.text('Paid', innerX + descWidth + totalWidth + lessWidth, tableTop + mmToPt(1.2), { width: paidWidth, align: 'right' });
+  doc.text('Balance', innerX + descWidth + totalWidth + lessWidth + paidWidth, tableTop + mmToPt(1.2), { width: balanceWidth - mmToPt(1), align: 'right' });
+
+  let rowTop = tableTop + tableHeaderHeight;
+  doc.fillColor('#0F172A').font('Helvetica').fontSize(7.7);
+
+  if (groupedRows.length === 0) {
+    doc.text('No fee details available.', innerX, rowTop + mmToPt(1.5), {
+      width: tableWidth,
+      align: 'center'
+    });
+  } else {
+    groupedRows.forEach((row, index) => {
+      const rowY = rowTop + index * rowHeight;
+      doc.moveTo(innerX, rowY).lineTo(innerX + tableWidth, rowY).strokeColor('#E2E8F0').stroke();
+      doc.text(row.displayName, innerX + mmToPt(1.2), rowY + mmToPt(0.8), { width: descWidth - mmToPt(2), ellipsis: true });
+      doc.text(formatReceiptCurrency(row.totalAmount), innerX + descWidth, rowY + mmToPt(0.8), { width: totalWidth - mmToPt(1), align: 'right' });
+      doc.text(formatReceiptCurrency(row.discountAmount), innerX + descWidth + totalWidth, rowY + mmToPt(0.8), { width: lessWidth - mmToPt(1), align: 'right' });
+      doc.text(formatReceiptCurrency(row.paidAmount), innerX + descWidth + totalWidth + lessWidth, rowY + mmToPt(0.8), { width: paidWidth - mmToPt(1), align: 'right' });
+      doc.text(formatReceiptCurrency(row.balanceAmount), innerX + descWidth + totalWidth + lessWidth + paidWidth, rowY + mmToPt(0.8), { width: balanceWidth - mmToPt(1), align: 'right' });
+    });
+  }
+
+  const tableBottom = rowTop + groupedRows.length * rowHeight;
+  doc.moveTo(innerX, tableBottom).lineTo(innerX + tableWidth, tableBottom).strokeColor('#E2E8F0').stroke();
+
+  const summaryTop = tableBottom + mmToPt(1.8);
+  const summaryWidth = mmToPt(70);
+  const summaryX = innerX + innerWidth - summaryWidth;
+
+  doc.roundedRect(summaryX, summaryTop, summaryWidth, mmToPt(18), 1.2)
+    .lineWidth(0.4)
+    .strokeColor('#CBD5E1')
+    .stroke();
+
+  doc.fillColor('#334155').font('Helvetica-Bold').fontSize(7.8)
+    .text('Grand Total', summaryX + mmToPt(1), summaryTop + mmToPt(0.8), { width: summaryWidth - mmToPt(2) });
+
+  doc.fillColor('#0F172A').font('Helvetica').fontSize(7.6);
+  const summaryLineY = summaryTop + mmToPt(4.5);
+  const summaryRowGap = mmToPt(3.2);
+  doc.text('Total Amount', summaryX + mmToPt(1), summaryLineY, { width: summaryWidth - mmToPt(16) });
+  doc.text(formatReceiptCurrency(totals.totalAmount), summaryX + mmToPt(16), summaryLineY, { width: summaryWidth - mmToPt(17), align: 'right' });
+  doc.text('Less Amount', summaryX + mmToPt(1), summaryLineY + summaryRowGap, { width: summaryWidth - mmToPt(16) });
+  doc.text(formatReceiptCurrency(totals.discountAmount), summaryX + mmToPt(16), summaryLineY + summaryRowGap, { width: summaryWidth - mmToPt(17), align: 'right' });
+  doc.text('Paid Amount', summaryX + mmToPt(1), summaryLineY + summaryRowGap * 2, { width: summaryWidth - mmToPt(16) });
+  doc.text(formatReceiptCurrency(totals.paidAmount), summaryX + mmToPt(16), summaryLineY + summaryRowGap * 2, { width: summaryWidth - mmToPt(17), align: 'right' });
+  doc.font('Helvetica-Bold');
+  doc.text('Balance Amount', summaryX + mmToPt(1), summaryLineY + summaryRowGap * 3, { width: summaryWidth - mmToPt(16) });
+  doc.text(formatReceiptCurrency(totals.balanceAmount), summaryX + mmToPt(16), summaryLineY + summaryRowGap * 3, { width: summaryWidth - mmToPt(17), align: 'right' });
+
+  doc.restore();
+};
+
 const getInvoicePaymentData = async (id) => {
   const paymentDoc = await Payment.findById(id)
     .populate('studentId')
@@ -215,114 +516,40 @@ export const generateInvoicePDF = async (req, res) => {
     }
 
     const { payment, invoice, summary } = invoiceContext;
+    const groupedRows = groupFeeAllocationsForReceipt(payment);
+    const receiptTotals = calculateReceiptTotals(groupedRows);
     const { fullRemainingBalance } = summary;
 
-
-    const doc = new PDFDocument({ 
-      margins: { top: 10, bottom: 5, left: 40, right: 40 }, 
-      size: [595.28, 280.63] 
+    const doc = new PDFDocument({
+      size: 'A4',
+      margins: 0
     });
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename=invoice_${invoice.invoiceNumber}.pdf`);
 
     doc.pipe(res);
+    const pageMargin = mmToPt(5);
+    const copyHeight = mmToPt(95);
+    const copyWidth = doc.page.width - pageMargin * 2;
+    const logoPath = path.resolve(process.cwd(), '../Kasthuri-Billing-FE/public/logo.svg');
 
-    doc.rect(0, 0, doc.page.width, 10).fill('#1E3A8A');
+    drawReceiptCopy({
+      doc,
+      payment,
+      invoice,
+      groupedRows,
+      totals: receiptTotals,
+      x: pageMargin,
+      y: pageMargin,
+      width: copyWidth,
+      height: copyHeight,
+      logoPath
+    });
 
-    const logoPath = path.resolve(process.cwd(), '../frontend/public/logo.svg');
-    if (fs.existsSync(logoPath)) {
-      try {
-        const svgCode = fs.readFileSync(logoPath, 'utf8');
-        doc.save();
-        doc.translate(40, 15);
-        doc.scale(50 / 400);
-        SVGtoPDF(doc, svgCode, 0, 0, { assumePt: true });
-        doc.restore();
-      } catch(e) {
-        console.error("Error loading SVG logo:", e);
-      }
-    }
-
-    doc.fillColor('#1E3A8A')
-       .fontSize(14)
-       .font('Helvetica-Bold')
-       .text('KASTHURI NURSERY & PRIMARY SCHOOL', 95, 20, { align: 'left' });
-
-    doc.fillColor('#4B5563')
-       .fontSize(8)
-       .font('Helvetica')
-       .text('No.15 & 44 Eda Street, Saidapet, Vellore - 632 012.', 95, 35)
-       .text('Phone: 0416-2211877, +91 97919 50179 | Email: Kasthurinurseryschool@gmail.com', 95, 45);
-
-    doc.fillColor('#000000')
-       .fontSize(12)
-       .font('Helvetica-Bold')
-       .text('FEE RECEIPT / INVOICE', 40, 20, { align: 'right' });
-
-    doc.moveTo(40, 65).lineTo(555, 65).strokeColor('#E5E7EB').stroke();
-
-    const topY = 75;
-
-    doc.fontSize(9).font('Helvetica-Bold').fillColor('#374151').text('Invoice Details:', 40, topY);
-    doc.font('Helvetica').fillColor('#000000').text(`Date: ${payment.paymentDate.toLocaleDateString()}`, 40, topY + 12);
-    doc.text(`Payment Method: ${payment.paymentMethod}`, 40, topY + 24);
-    if (payment.referenceNumber) {
-      doc.text(`Ref No: ${payment.referenceNumber}`, 40, topY + 36);
-    }
-
-    doc.font('Helvetica-Bold').fillColor('#374151').text('Student Details:', 300, topY);
-    doc.font('Helvetica').fillColor('#000000').text(`Name: ${payment.studentId.studentName}`, 300, topY + 12);
-    doc.text(`Admission No: ${payment.studentId.admissionNumber}`, 300, topY + 24);
-    doc.text(`Class & Section: ${payment.studentId.currentClass} ${payment.studentId.section || ''}`, 300, topY + 36);
-
-    const tableTop = 125;
-    doc.rect(40, tableTop, 515, 18).fill('#F3F4F6');
-    doc.fillColor('#374151').font('Helvetica-Bold');
-    doc.text('Fee Description', 50, tableTop + 5);
-    doc.text('Total Amount', 240, tableTop + 5);
-    doc.text('Paid (This Receipt)', 340, tableTop + 5);
-    doc.text('Balance', 460, tableTop + 5);
-
-    let currentRowTop = tableTop + 18;
-
-    doc.fillColor('#000000').font('Helvetica');
     if (payment.feeAllocations && payment.feeAllocations.length > 0) {
-      payment.feeAllocations.forEach((alloc) => {
-        doc.moveTo(40, currentRowTop).lineTo(555, currentRowTop).strokeColor('#E5E7EB').stroke();
-        const fee = alloc.studentFeeId;
-        const feeName = fee?.feeCategoryId?.name || 'Fee';
-        
-        doc.text(feeName, 50, currentRowTop + 6);
-        doc.text(`Rs. ${fee?.totalAmount?.toFixed(2) || '0.00'}`, 240, currentRowTop + 6);
-        doc.text(`Rs. ${alloc.amount.toFixed(2)}`, 340, currentRowTop + 6);
-        doc.text(`Rs. ${fee?.remainingAmount?.toFixed(2) || '0.00'}`, 460, currentRowTop + 6);
-        
-        currentRowTop += 20;
-      });
-    } else if (payment.studentFeeId) {
-      doc.moveTo(40, currentRowTop).lineTo(555, currentRowTop).strokeColor('#E5E7EB').stroke();
-      doc.text(payment.studentFeeId.feeCategoryId?.name || 'Fee', 50, currentRowTop + 6);
-      doc.text(`Rs. ${payment.studentFeeId.totalAmount.toFixed(2)}`, 240, currentRowTop + 6);
-      doc.text(`Rs. ${payment.amount.toFixed(2)}`, 340, currentRowTop + 6);
-      doc.text(`Rs. ${payment.studentFeeId.remainingAmount.toFixed(2)}`, 460, currentRowTop + 6);
-      currentRowTop += 20;
-    }
-
-    doc.moveTo(40, currentRowTop).lineTo(555, currentRowTop).strokeColor('#E5E7EB').stroke();
-
-    const summaryTop = currentRowTop + 10;
-    doc.font('Helvetica-Bold').fillColor('#374151').text('Payment Summary', 340, summaryTop);
-    doc.moveTo(340, summaryTop + 12).lineTo(555, summaryTop + 12).strokeColor('#E5E7EB').stroke();
-
-    doc.font('Helvetica').fillColor('#000000').text('Amount Received:', 340, summaryTop + 18);
-    doc.font('Helvetica-Bold').text(`Rs. ${payment.amount.toFixed(2)}`, 460, summaryTop + 18);
-
-    doc.font('Helvetica').text('Remaining Balance:', 340, summaryTop + 32);
-    if (payment.feeAllocations && payment.feeAllocations.length > 0) {
-      doc.font('Helvetica').text(`Rs. ${fullRemainingBalance.toFixed(2)}`, 460, summaryTop + 32);
-    } else if (payment.studentFeeId) {
-      doc.font('Helvetica').text(`Rs. ${payment.studentFeeId.remainingAmount.toFixed(2)}`, 460, summaryTop + 32);
+      doc.info.Title = `Invoice ${invoice.invoiceNumber}`;
+      doc.info.Subject = `Receipt balance ${formatReceiptCurrency(fullRemainingBalance)}`;
     }
 
     doc.end();
