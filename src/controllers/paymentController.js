@@ -116,7 +116,9 @@ export const createPayment = async (req, res) => {
 
     const totalRemaining = unpaidFees.reduce((sum, f) => sum + f.remainingAmount, 0);
     if (amount > totalRemaining) {
-      return res.status(400).json({ error: 'Amount exceeds total remaining balance for selected fees' });
+      return res.status(400).json({
+        error: `Payment amount (Rs. ${amount}) cannot exceed the total remaining balance (Rs. ${totalRemaining}) for the selected fees.`
+      });
     }
 
     let amountLeftToDistribute = amount;
