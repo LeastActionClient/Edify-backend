@@ -100,9 +100,10 @@ export const createPayment = async (req, res) => {
             healedAmt = (topLen * topPrice) + (bottomLen * bottomPrice);
           }
           if (healedAmt > 0) {
-            feeDoc.totalAmount = healedAmt;
-            feeDoc.remainingAmount = healedAmt;
-            await feeDoc.save();
+            await StudentFee.updateOne(
+              { _id: feeDoc._id },
+              { $set: { totalAmount: healedAmt, remainingAmount: healedAmt } }
+            );
           }
         }
       }

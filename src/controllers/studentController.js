@@ -203,7 +203,7 @@ export const getStudentById = async (req, res) => {
       .populate('feeCategoryId');
       
     for (const f of studentFeesRaw) {
-      if ((f.totalAmount === 0 || f.remainingAmount === 0) && f.paidAmount === 0 && f.feeCategoryId) {
+      if ((f.totalAmount === 0 || f.remainingAmount === 0) && (f.paidAmount || 0) === 0 && f.feeCategoryId) {
         const cat = f.feeCategoryId;
         let healedAmt = parseFloat(cat.amount || 0);
         if (cat.name.toLowerCase() === 'uniform' && cat.pricing) {
@@ -216,7 +216,10 @@ export const getStudentById = async (req, res) => {
         if (healedAmt > 0) {
           f.totalAmount = healedAmt;
           f.remainingAmount = healedAmt;
-          await f.save();
+          await StudentFee.updateOne(
+            { _id: f._id },
+            { $set: { totalAmount: healedAmt, remainingAmount: healedAmt } }
+          );
         }
       }
     }
@@ -929,9 +932,10 @@ export const updateStudent = async (req, res) => {
               else catAmt = parseFloat(cat.amount || 0);
             }
             if (catAmt > 0) {
-              f.totalAmount = catAmt;
-              f.remainingAmount = catAmt;
-              await f.save();
+              await StudentFee.updateOne(
+                { _id: f._id },
+                { $set: { totalAmount: catAmt, remainingAmount: catAmt } }
+              );
             }
           }
         }
