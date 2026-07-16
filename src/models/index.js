@@ -1,6 +1,7 @@
 export { default as User } from './User.js';
 export { default as ActivityLog } from './ActivityLog.js';
 export { default as Application } from './Application.js';
+export { default as AdmissionSequence } from './AdmissionSequence.js';
 export { default as Student } from './Student.js';
 export { default as Class } from './Class.js';
 export { default as Section } from './Section.js';

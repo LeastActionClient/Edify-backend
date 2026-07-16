@@ -1,54 +1,38 @@
-import { Application, Student, ActivityLog, Class, Section, StudentFee, Payment } from '../models/index.js';
-import fs from 'fs';
-import path from 'path';
+import mongoose from 'mongoose';
+import { Application, ActivityLog, Class, Section, StudentFee, Payment } from '../models/index.js';
+import { createStudentWithGeneratedAdmissionNumber } from '../services/studentAdmissionService.js';
+import { getCurrentApplicationNumber, reserveNextApplicationNumber, isDuplicateApplicationNumberError } from '../services/applicationNumberService.js';
+import { isDuplicateAdmissionNumberError } from '../services/admissionNumberService.js';
+import { getApplicationFeeAmount } from '../services/settingsService.js';
 
-const generateApplicationId = async () => {
-  const currentYear = new Date().getFullYear();
-
-  try {
-    const settingsPath = path.join(process.cwd(), 'settings.json');
-    if (fs.existsSync(settingsPath)) {
-      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-      if (settings.nextApplicationNo) {
-        const nextNo = settings.nextApplicationNo;
-        const parts = nextNo.split('-');
-        if (parts.length >= 2) {
-          const lastNumStr = parts[parts.length - 1];
-          const lastNum = parseInt(lastNumStr, 10);
-          if (!isNaN(lastNum)) {
-            const prefix = parts.slice(0, parts.length - 1).join('-');
-            const paddingLength = lastNumStr.length > 0 ? lastNumStr.length : 4;
-            settings.nextApplicationNo = `${prefix}-${String(lastNum + 1).padStart(paddingLength, '0')}`;
-            fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-          }
-        }
-        return nextNo;
-      }
-    }
-  } catch(e) {}
-
-  const latestApp = await Application.findOne().sort({ createdAt: -1 });
-
-  if (!latestApp) return `APP-${currentYear}-0001`;
-
-  const parts = latestApp.applicationId.split('-');
-  if (parts.length >= 2) {
-    const lastNumStr = parts[parts.length - 1];
-    const lastNum = parseInt(lastNumStr, 10);
-
-    if (!isNaN(lastNum)) {
-      const prefix = parts.slice(0, parts.length - 1).join('-');
-      const paddingLength = lastNumStr.length > 0 ? lastNumStr.length : 4;
-      return `${prefix}-${String(lastNum + 1).padStart(paddingLength, '0')}`;
-    }
+const getDuplicateConflict = (error) => {
+  if (isDuplicateApplicationNumberError(error)) {
+    return {
+      status: 409,
+      error: 'Application number already exists. Please try again.'
+    };
   }
 
-  return `APP-${currentYear}-0001`;
+  if (isDuplicateAdmissionNumberError(error)) {
+    return {
+      status: 409,
+      error: 'Admission number already exists. Please try again.'
+    };
+  }
+
+  if (error?.code === 11000) {
+    return {
+      status: 409,
+      error: 'Duplicate record detected. Please try again.'
+    };
+  }
+
+  return null;
 };
 
 export const getNextNumbers = async (req, res) => {
   try {
-    const nextAppId = await generateApplicationId();
+    const nextAppId = await getCurrentApplicationNumber();
     res.json({ applicationNo: nextAppId });
   } catch (error) {
     res.status(500).json({ error: 'Error generating numbers' });
@@ -56,35 +40,24 @@ export const getNextNumbers = async (req, res) => {
 };
 
 export const createApplication = async (req, res) => {
-  try {
-    const {
-      applicationNo, adminNo,
-      studentName, parentName, fatherName, motherName, fatherPhone, motherPhone,
-      address, applyingClass, previousSchool, siblings, feePaid
-    } = req.body;
+  const {
+    studentName, parentName, fatherName, motherName, fatherPhone, motherPhone,
+    address, applyingClass, previousSchool, siblings, feePaid
+  } = req.body;
 
-    const applicationId = applicationNo || await generateApplicationId();
-    const finalAdminNo = adminNo;
-    
-    let feeAmount = 0;
-    const isFeePaid = feePaid === true || feePaid === 'true';
-    if (isFeePaid) {
-      try {
-        const settingsPath = path.join(process.cwd(), 'settings.json');
-        if (fs.existsSync(settingsPath)) {
-          const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-          if (settings.applicationFeeAmount) {
-            feeAmount = Number(settings.applicationFeeAmount);
-          }
-        }
-      } catch (e) { console.error('Error reading settings for feeAmount', e); }
-    }
+  const isFeePaid = feePaid === true || feePaid === 'true';
+  const feeAmount = isFeePaid ? await getApplicationFeeAmount() : 0;
 
-    let application;
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const session = await mongoose.startSession();
     try {
-      application = await Application.create({
+      session.startTransaction();
+
+      const applicationId = await reserveNextApplicationNumber(session);
+
+      const [application] = await Application.create([{
         applicationId,
-        adminNo: finalAdminNo,
         studentName,
         parentName,
         fatherName,
@@ -99,46 +72,56 @@ export const createApplication = async (req, res) => {
         feeAmount,
         feePaidDate: isFeePaid ? new Date() : null,
         processedById: req.user ? req.user.id : undefined
-      });
-    } catch (createErr) {
-      if (createErr.code === 11000) {
-        return res.status(400).json({ error: 'Application number already exists. Please use a unique application number.' });
-      }
-      throw createErr;
-    }
+      }], { session });
 
-    if (isFeePaid && feeAmount > 0) {
-      try {
-        await Payment.create({
-          applicationId: application._id,
-          paymentType: 'APPLICATION',
-          amount: feeAmount,
-          paymentMethod: 'CASH',
-          status: 'PAID',
-          remarks: 'Application Fee for ' + applicationId,
-          recordedById: req.user ? req.user.id : undefined
-        });
-      } catch (paymentErr) {
-        console.error('Failed to record application fee payment:', paymentErr);
+      if (isFeePaid && feeAmount > 0) {
+        try {
+          await Payment.create([{
+            applicationId: application._id,
+            paymentType: 'APPLICATION',
+            amount: feeAmount,
+            paymentMethod: 'CASH',
+            status: 'PAID',
+            remarks: 'Application Fee for ' + applicationId,
+            recordedById: req.user ? req.user.id : undefined
+          }], { session });
+        } catch (paymentErr) {
+          console.error('Failed to record application fee payment:', paymentErr);
+        }
       }
-    }
 
-    if (req.user) {
-      try {
-        await ActivityLog.create({
-          userId: req.user.id,
-          action: 'CREATED_APPLICATION',
-          details: `Application ${applicationId} created for ${studentName}`
-        });
-      } catch (logErr) {
-        console.error('Failed to create activity log:', logErr);
+      if (req.user) {
+        try {
+          await ActivityLog.create([{
+            userId: req.user.id,
+            action: 'CREATED_APPLICATION',
+            details: `Application ${applicationId} created for ${studentName}`
+          }], { session });
+        } catch (logErr) {
+          console.error('Failed to create activity log:', logErr);
+        }
       }
-    }
 
-    res.status(201).json(application);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Error creating application' });
+      await session.commitTransaction();
+      res.status(201).json(application);
+      return;
+    } catch (error) {
+      await session.abortTransaction();
+      if (isDuplicateApplicationNumberError(error) && attempt < maxAttempts) {
+        continue;
+      }
+      const conflict = getDuplicateConflict(error);
+      if (conflict) {
+        console.warn('Duplicate application number detected:', error?.message || error);
+        res.status(conflict.status).json({ error: conflict.error });
+        return;
+      }
+      console.error(error);
+      res.status(500).json({ error: 'Error creating application' });
+      return;
+    } finally {
+      session.endSession();
+    }
   }
 };
 
@@ -156,15 +139,7 @@ export const toggleFeeStatus = async (req, res) => {
     let feePaidDate = application.feePaidDate;
 
     if (feePaid && !application.feePaid) {
-      try {
-        const settingsPath = path.join(process.cwd(), 'settings.json');
-        if (fs.existsSync(settingsPath)) {
-          const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-          if (settings.applicationFeeAmount) {
-            feeAmount = Number(settings.applicationFeeAmount);
-          }
-        }
-      } catch (e) { console.error('Error reading settings for feeAmount', e); }
+      feeAmount = await getApplicationFeeAmount();
       feePaidDate = new Date();
     } else if (!feePaid) {
       feeAmount = 0;
@@ -204,128 +179,122 @@ export const getApplicationById = async (req, res) => {
 };
 
 export const approveApplication = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { section } = req.body;
+  const { id } = req.params;
+  const { section } = req.body;
+  const maxAttempts = 3;
 
-    const application = await Application.findById(id);
-    if (!application) {
-      res.status(404).json({ error: 'Application not found' });
-      return;
-    }
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const session = await mongoose.startSession();
 
-    if (application.status === 'APPROVED') {
-      res.status(400).json({ error: 'Application already approved' });
-      return;
-    }
+    try {
+      session.startTransaction();
 
-    if (!section) {
-      res.status(400).json({ error: 'Section must be assigned upon approval' });
-      return;
-    }
+      const application = await Application.findById(id).session(session);
+      if (!application) {
+        await session.abortTransaction();
+        res.status(404).json({ error: 'Application not found' });
+        return;
+      }
 
-    const generateAdmissionNumber = async () => {
-      try {
-        const settingsPath = path.join(process.cwd(), 'settings.json');
-        if (fs.existsSync(settingsPath)) {
-          const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-          if (settings.nextAdmissionNo) {
-            const nextNo = settings.nextAdmissionNo;
-            const parts = nextNo.split('-');
-            if (parts.length >= 2) {
-              const lastNumStr = parts[parts.length - 1];
-              const lastNum = parseInt(lastNumStr, 10);
-              if (!isNaN(lastNum)) {
-                const prefix = parts.slice(0, parts.length - 1).join('-');
-                const paddingLength = lastNumStr.length > 0 ? lastNumStr.length : 2;
-                settings.nextAdmissionNo = `${prefix}-${String(lastNum + 1).padStart(paddingLength, '0')}`;
-                fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-              }
-            }
-            return nextNo;
-          }
+      if (application.status === 'APPROVED') {
+        await session.abortTransaction();
+        res.status(400).json({ error: 'Application already approved' });
+        return;
+      }
+
+      if (!section) {
+        await session.abortTransaction();
+        res.status(400).json({ error: 'Section must be assigned upon approval' });
+        return;
+      }
+
+      const { student: newStudent, admissionNumber } = await createStudentWithGeneratedAdmissionNumber({
+        applicationId: application._id,
+        studentName: application.studentName,
+        guardian: application.parentName,
+        fatherName: application.fatherName,
+        motherName: application.motherName,
+        fatherPhone: application.fatherPhone,
+        motherPhone: application.motherPhone,
+        address: application.address,
+        currentClass: application.applyingClass,
+        section,
+        siblings: application.siblings || null,
+        addedById: req.user.id
+      }, { session });
+
+      const classData = await Class.findOne({ name: application.applyingClass }).session(session);
+
+      if (classData) {
+        let defaultFees = {};
+        if (classData.defaultFees) {
+          defaultFees = { ...classData.defaultFees };
         }
-      } catch(e) {}
-    
-      const latestStudent = await Student.findOne().sort({ createdAt: -1 });
-      if (!latestStudent) return `KA-01`;
-    
-      const parts = latestStudent.admissionNumber.split('-');
-      if (parts.length >= 2) {
-        const lastNumStr = parts[parts.length - 1];
-        const lastNum = parseInt(lastNumStr, 10);
-    
-        if (!isNaN(lastNum)) {
-          const prefix = parts.slice(0, parts.length - 1).join('-');
-          const paddingLength = lastNumStr.length > 0 ? lastNumStr.length : 2;
-          return `${prefix}-${String(lastNum + 1).padStart(paddingLength, '0')}`;
+
+        const sectionData = await Section.findOne({ classId: classData._id, name: section }).session(session);
+        if (sectionData && sectionData.defaultFees) {
+          defaultFees = { ...defaultFees, ...sectionData.defaultFees };
+        }
+
+        const feeEntries = Object.entries(defaultFees);
+        if (feeEntries.length > 0) {
+          await StudentFee.insertMany(
+            feeEntries.map(([feeCategoryId, amount]) => ({
+              studentId: newStudent._id,
+              feeCategoryId,
+              totalAmount: amount,
+              remainingAmount: amount
+            })),
+            { session }
+          );
         }
       }
-    
-      return `KA-01`;
-    };
 
-    let admissionNumber = application.adminNo;
-    if (!admissionNumber) {
-      admissionNumber = await generateAdmissionNumber();
+      await Application.findByIdAndUpdate(
+        id,
+        {
+          status: 'APPROVED',
+          processedById: req.user.id,
+          approvedBy: req.user.id,
+          approvedAt: new Date(),
+          adminNo: admissionNumber,
+          student: newStudent._id
+        },
+        { new: true, session }
+      );
+
+      await ActivityLog.create([{
+        userId: req.user.id,
+        action: 'APPROVED_APPLICATION',
+        details: `Application ${application.applicationId} approved. Student ${admissionNumber} created.`
+      }], { session });
+
+      await session.commitTransaction();
+
+      res.json({
+        success: true,
+        message: 'Application approved successfully',
+        admissionNumber,
+        data: newStudent
+      });
+      return;
+    } catch (error) {
+      await session.abortTransaction();
+      if ((isDuplicateAdmissionNumberError(error) || isDuplicateApplicationNumberError(error)) && attempt < maxAttempts) {
+        continue;
+      }
+      const conflict = getDuplicateConflict(error);
+      if (conflict) {
+        console.warn('Duplicate admission number detected:', error?.message || error);
+        res.status(conflict.status).json({ error: conflict.error });
+        return;
+      }
+      console.error('Error approving application', error);
+      res.status(500).json({ error: 'Error approving application' });
+      return;
+    } finally {
+      session.endSession();
     }
-
-    const updatedApp = await Application.findByIdAndUpdate(
-      id,
-      { status: 'APPROVED', processedById: req.user.id },
-      { new: true }
-    );
-    const newStudent = await Student.create({
-      admissionNumber,
-      applicationId: application._id,
-      studentName: application.studentName,
-      guardian: application.parentName,
-      fatherName: application.fatherName,
-      motherName: application.motherName,
-      fatherPhone: application.fatherPhone,
-      motherPhone: application.motherPhone,
-      address: application.address,
-      currentClass: application.applyingClass,
-      section: section,
-      siblings: application.siblings || null,
-      addedById: req.user.id
-    });
-
-    const classData = await Class.findOne({ name: application.applyingClass });
-
-    if (classData) {
-      let defaultFees = {};
-      if (classData.defaultFees) {
-        defaultFees = { ...classData.defaultFees };
-      }
-
-      const sectionData = await Section.findOne({ classId: classData._id, name: section });
-      if (sectionData && sectionData.defaultFees) {
-        defaultFees = { ...defaultFees, ...sectionData.defaultFees };
-      }
-
-      const feeEntries = Object.entries(defaultFees);
-      if (feeEntries.length > 0) {
-        await StudentFee.insertMany(
-          feeEntries.map(([feeCategoryId, amount]) => ({
-            studentId: newStudent._id,
-            feeCategoryId,
-            totalAmount: amount,
-            remainingAmount: amount
-          }))
-        );
-      }
-    }
-
-    await ActivityLog.create({
-      userId: req.user.id,
-      action: 'APPROVED_APPLICATION',
-      details: `Application ${application.applicationId} approved. Student ${admissionNumber} created.`
-    });
-
-    res.json({ message: 'Application approved successfully', student: newStudent });
-  } catch (error) {
-    res.status(500).json({ error: 'Error approving application' });
   }
 };
 

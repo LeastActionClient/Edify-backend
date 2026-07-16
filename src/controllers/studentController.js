@@ -16,8 +16,10 @@ import {
   IncludedChargeStockTransaction,
   Activity
 } from '../models/index.js';
+import { createStudentWithGeneratedAdmissionNumber } from '../services/studentAdmissionService.js';
+import { isDuplicateAdmissionNumberError } from '../services/admissionNumberService.js';
 
-export const assignClassDefaultFeesToStudent = async (student) => {
+export const assignClassDefaultFeesToStudent = async (student, session = null) => {
   try {
     const studentId = student._id;
     const currentClass = student.currentClass;
@@ -66,32 +68,42 @@ export const assignClassDefaultFeesToStudent = async (student) => {
         }
 
         if (isUniform) {
-          const existing = await StudentFee.findOne({ studentId, feeCategoryId: catId });
+          const existing = await StudentFee.findOne({ studentId, feeCategoryId: catId }).session(session);
           if (!existing) {
-            await StudentFee.create({
+            const uniformFeePayload = {
               studentId,
               feeCategoryId: catId,
               totalAmount: amount,
               remainingAmount: amount,
               paidAmount: 0,
               uniformDetails: uniformDetailsToSave
-            });
+            };
+            if (session) {
+              await StudentFee.create([uniformFeePayload], { session });
+            } else {
+              await StudentFee.create(uniformFeePayload);
+            }
           }
         } else if (amount > 0) {
           baseFeeTotal += amount;
-          const existing = await StudentFee.findOne({ studentId, feeCategoryId: catId });
+          const existing = await StudentFee.findOne({ studentId, feeCategoryId: catId }).session(session);
           if (existing) {
             existing.totalAmount = amount;
             existing.remainingAmount = Math.max(0, amount - existing.paidAmount);
-            await existing.save();
+            await existing.save(session ? { session } : undefined);
           } else {
-            await StudentFee.create({
+            const feePayload = {
               studentId,
               feeCategoryId: catId,
               totalAmount: amount,
               remainingAmount: amount,
               paidAmount: 0
-            });
+            };
+            if (session) {
+              await StudentFee.create([feePayload], { session });
+            } else {
+              await StudentFee.create(feePayload);
+            }
           }
         }
       }
@@ -101,7 +113,7 @@ export const assignClassDefaultFeesToStudent = async (student) => {
     await Student.findByIdAndUpdate(studentId, {
       baseFee: baseFeeTotal,
       grandTotal: baseFeeTotal
-    });
+    }, session ? { session } : undefined);
 
     return baseFeeTotal;
   } catch (error) {
@@ -224,7 +236,7 @@ const recordIncludedChargeStock = async ({
     referenceType,
     referenceId,
     performedById
-  });
+  }, meta.session ? { session: meta.session } : undefined);
 };
 
 const adjustIncludedChargeStock = async (chargeId, delta, meta = {}) => {
@@ -238,7 +250,7 @@ const adjustIncludedChargeStock = async (chargeId, delta, meta = {}) => {
   }
 
   charge.stockQuantity = nextStock;
-  await charge.save();
+  await charge.save(meta.session ? { session: meta.session } : undefined);
 
   await recordIncludedChargeStock({
     includedChargeId: charge._id,
@@ -278,172 +290,183 @@ const getClassDefaultFees = async (currentClass, section) => {
 };
 
 export const addStudentManually = async (req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-  
-  try {
-    const { 
-      studentName, fatherName, motherName, fatherPhone, motherPhone, address, 
-      currentClass, section, admissionNumber: reqAdmissionNumber,
-      dateOfBirth, gender, bloodGroup, aadhaarNumber, religion, community, caste, RTE, nationality,
-      fatherOccupation, motherOccupation, guardian, city, state, pincode, whatsappNumber, emisNumber,
-      applicationId, includedChargesIds = [], activitiesIds = []
-    } = req.body;
+  const maxAttempts = 3;
 
-    if (!studentName || !currentClass) {
-      res.status(400).json({ error: 'Student Name and Class are required' });
-      return;
-    }
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const session = await mongoose.startSession();
 
-    if (!reqAdmissionNumber) {
-      res.status(400).json({ error: 'Admission Number is required' });
-      return;
-    }
+    try {
+      session.startTransaction();
 
-    let application = null;
-    if (applicationId) {
-      application = await Application.findById(applicationId).session(session);
-      if (!application) {
-        throw new Error('Application not found');
+      const { 
+        studentName, fatherName, motherName, fatherPhone, motherPhone, address, 
+        currentClass, section,
+        dateOfBirth, gender, bloodGroup, aadhaarNumber, religion, community, caste, RTE, nationality,
+        fatherOccupation, motherOccupation, guardian, city, state, pincode, whatsappNumber, emisNumber,
+        applicationId, includedChargesIds = [], activitiesIds = []
+      } = req.body;
+
+      if (!studentName || !currentClass) {
+        await session.abortTransaction();
+        res.status(400).json({ error: 'Student Name and Class are required' });
+        return;
       }
-      if (application.status === 'APPROVED') {
-        throw new Error('This application has already been approved and linked to a student.');
-      }
-      const normalize = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
-      if (normalize(application.applyingClass) !== normalize(currentClass)) {
-        throw new Error('Application class does not match selected class.');
-      }
-    }
 
-    const admissionNumber = reqAdmissionNumber;
-
-    const student = await Student.create([{
-      admissionNumber,
-      studentName,
-      fatherName: fatherName || '',
-      motherName: motherName || '',
-      fatherPhone: fatherPhone || '',
-      motherPhone: motherPhone || '',
-      address: address || '',
-      dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
-      gender: gender || '',
-      bloodGroup: bloodGroup || '',
-      aadhaarNumber: aadhaarNumber || '',
-      religion: religion || '',
-      community: community || '',
-      caste: caste || '',
-      RTE: RTE || '',
-      nationality: nationality || '',
-      fatherOccupation: fatherOccupation || '',
-      motherOccupation: motherOccupation || '',
-      guardian: guardian || '',
-      city: city || '',
-      state: state || '',
-      pincode: pincode || '',
-      whatsappNumber: whatsappNumber || '',
-      emisNumber: emisNumber || '',
-      currentClass,
-      section,
-      addedById: req.user?.id,
-      applicationId: applicationId || null
-    }], { session });
-
-    const selectedIncludedChargeIds = [...new Set(includedChargesIds.map(id => id?.toString()).filter(Boolean))];
-    const selectedActivityIds = [...new Set(activitiesIds.map(id => id?.toString()).filter(Boolean))];
-
-    if (selectedIncludedChargeIds.length > 0) {
-      const charges = await IncludedCharge.find({ _id: { $in: selectedIncludedChargeIds } });
-      const chargeMap = new Map(charges.map(charge => [charge._id.toString(), charge]));
-
-      for (const chargeId of selectedIncludedChargeIds) {
-        const charge = chargeMap.get(chargeId);
-        if (!charge) {
-          throw new Error('One of the included charges was not found');
+      let application = null;
+      if (applicationId) {
+        application = await Application.findById(applicationId).session(session);
+        if (!application) {
+          throw new Error('Application not found');
         }
-        if (clampNonNegative(charge.stockQuantity) <= 0) {
-          throw new Error(`Not enough stock for ${charge.name}`);
+        if (application.status === 'APPROVED') {
+          throw new Error('This application has already been approved and linked to a student.');
+        }
+        const normalize = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (normalize(application.applyingClass) !== normalize(currentClass)) {
+          throw new Error('Application class does not match selected class.');
         }
       }
 
-      await StudentIncludedCharge.insertMany(
-        selectedIncludedChargeIds.map(chargeId => ({
-          studentId: student[0]._id,
-          includedChargeId: chargeId
-        })),
-        { session }
-      );
+      const studentPayload = {
+        studentName,
+        fatherName: fatherName || '',
+        motherName: motherName || '',
+        fatherPhone: fatherPhone || '',
+        motherPhone: motherPhone || '',
+        address: address || '',
+        dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
+        gender: gender || '',
+        bloodGroup: bloodGroup || '',
+        aadhaarNumber: aadhaarNumber || '',
+        religion: religion || '',
+        community: community || '',
+        caste: caste || '',
+        RTE: RTE || '',
+        nationality: nationality || '',
+        fatherOccupation: fatherOccupation || '',
+        motherOccupation: motherOccupation || '',
+        guardian: guardian || '',
+        city: city || '',
+        state: state || '',
+        pincode: pincode || '',
+        whatsappNumber: whatsappNumber || '',
+        emisNumber: emisNumber || '',
+        currentClass,
+        section,
+        addedById: req.user?.id,
+        applicationId: applicationId || null
+      };
 
-      for (const chargeId of selectedIncludedChargeIds) {
-        await adjustIncludedChargeStock(chargeId, -1, {
-          performedById: req.user?.id,
-          reason: `Assigned to student ${admissionNumber}`,
-          referenceType: 'Student',
-          referenceId: student[0]._id
-        });
+      const { student, admissionNumber } = await createStudentWithGeneratedAdmissionNumber(studentPayload, { session });
+
+      const selectedIncludedChargeIds = [...new Set(includedChargesIds.map(id => id?.toString()).filter(Boolean))];
+      const selectedActivityIds = [...new Set(activitiesIds.map(id => id?.toString()).filter(Boolean))];
+
+      if (selectedIncludedChargeIds.length > 0) {
+        const charges = await IncludedCharge.find({ _id: { $in: selectedIncludedChargeIds } }).session(session);
+        const chargeMap = new Map(charges.map(charge => [charge._id.toString(), charge]));
+
+        for (const chargeId of selectedIncludedChargeIds) {
+          const charge = chargeMap.get(chargeId);
+          if (!charge) {
+            throw new Error('One of the included charges was not found');
+          }
+          if (clampNonNegative(charge.stockQuantity) <= 0) {
+            throw new Error(`Not enough stock for ${charge.name}`);
+          }
+        }
+
+        await StudentIncludedCharge.insertMany(
+          selectedIncludedChargeIds.map(chargeId => ({
+            studentId: student._id,
+            includedChargeId: chargeId
+          })),
+          { session }
+        );
+
+        for (const chargeId of selectedIncludedChargeIds) {
+          await adjustIncludedChargeStock(chargeId, -1, {
+            session,
+            performedById: req.user?.id,
+            reason: `Assigned to student ${admissionNumber}`,
+            referenceType: 'Student',
+            referenceId: student._id
+          });
+        }
       }
-    }
 
-    if (selectedActivityIds.length > 0) {
-      const activities = await Activity.find({ _id: { $in: selectedActivityIds } });
-      const activityIdsFound = new Set(activities.map(activity => activity._id.toString()));
-      const missingActivityId = selectedActivityIds.find(activityId => !activityIdsFound.has(activityId));
-      if (missingActivityId) {
-        throw new Error('One of the activities was not found');
+      if (selectedActivityIds.length > 0) {
+        const activities = await Activity.find({ _id: { $in: selectedActivityIds } }).session(session);
+        const activityIdsFound = new Set(activities.map(activity => activity._id.toString()));
+        const missingActivityId = selectedActivityIds.find(activityId => !activityIdsFound.has(activityId));
+        if (missingActivityId) {
+          throw new Error('One of the activities was not found');
+        }
+
+        await StudentActivity.insertMany(
+          selectedActivityIds.map(activityId => ({
+            studentId: student._id,
+            activityId
+          })),
+          { session }
+        );
       }
 
-      await StudentActivity.insertMany(
-        selectedActivityIds.map(activityId => ({
-          studentId: student[0]._id,
-          activityId
-        })),
-        { session }
-      );
+      const baseFeeTotal = await assignClassDefaultFeesToStudent(student, session);
+      const selectedIncludedCharges = selectedIncludedChargeIds.length > 0
+        ? await IncludedCharge.find({ _id: { $in: selectedIncludedChargeIds } }).session(session)
+        : [];
+      const selectedActivities = selectedActivityIds.length > 0
+        ? await Activity.find({ _id: { $in: selectedActivityIds } }).session(session)
+        : [];
+      const includedChargesTotal = selectedIncludedCharges.reduce((sum, charge) => sum + (Number(charge.amount) || 0), 0);
+      const activitiesTotal = selectedActivities.reduce((sum, activity) => sum + (Number(activity.amount) || 0), 0);
+
+      await Student.findByIdAndUpdate(student._id, {
+        includedChargesTotal,
+        activitiesTotal,
+        grandTotal: baseFeeTotal + includedChargesTotal + activitiesTotal
+      }, { session });
+
+      if (application) {
+        application.status = 'APPROVED';
+        application.approvedBy = req.user?.id;
+        application.approvedAt = new Date();
+        application.adminNo = admissionNumber;
+        application.student = student._id;
+        await application.save({ session });
+      }
+
+      if (req.user) {
+        await ActivityLog.create([{
+          userId: req.user.id,
+          action: applicationId ? 'APPROVED_APPLICATION' : 'CREATED_STUDENT_MANUALLY',
+          details: applicationId 
+            ? `Application ${application.applicationId} approved. Student ${admissionNumber} created.`
+            : `Student ${admissionNumber} created manually for class ${currentClass}`
+        }], { session });
+      }
+
+      await session.commitTransaction();
+
+      res.status(201).json({
+        success: true,
+        message: 'Student created successfully',
+        admissionNumber,
+        data: student
+      });
+      return;
+    } catch (error) {
+      await session.abortTransaction();
+      if (isDuplicateAdmissionNumberError(error) && attempt < maxAttempts) {
+        continue;
+      }
+      console.error("Manual add error:", error);
+      res.status(500).json({ error: error.message || 'Error adding student manually' });
+      return;
+    } finally {
+      session.endSession();
     }
-
-    const baseFeeTotal = await assignClassDefaultFeesToStudent(student[0]);
-    const selectedIncludedCharges = selectedIncludedChargeIds.length > 0
-      ? await IncludedCharge.find({ _id: { $in: selectedIncludedChargeIds } })
-      : [];
-    const selectedActivities = selectedActivityIds.length > 0
-      ? await Activity.find({ _id: { $in: selectedActivityIds } })
-      : [];
-    const includedChargesTotal = selectedIncludedCharges.reduce((sum, charge) => sum + (Number(charge.amount) || 0), 0);
-    const activitiesTotal = selectedActivities.reduce((sum, activity) => sum + (Number(activity.amount) || 0), 0);
-
-    await Student.findByIdAndUpdate(student[0]._id, {
-      includedChargesTotal,
-      activitiesTotal,
-      grandTotal: baseFeeTotal + includedChargesTotal + activitiesTotal
-    }, { session });
-
-    if (application) {
-      application.status = 'APPROVED';
-      application.approvedBy = req.user?.id;
-      application.approvedAt = new Date();
-      application.adminNo = admissionNumber;
-      application.student = student[0]._id;
-      await application.save({ session });
-    }
-
-    if (req.user) {
-      await ActivityLog.create([{
-        userId: req.user.id,
-        action: applicationId ? 'APPROVED_APPLICATION' : 'CREATED_STUDENT_MANUALLY',
-        details: applicationId 
-          ? `Application ${application.applicationId} approved. Student ${admissionNumber} created.`
-          : `Student ${admissionNumber} created manually for class ${currentClass}`
-      }], { session });
-    }
-
-    await session.commitTransaction();
-    session.endSession();
-
-    res.status(201).json(student[0]);
-  } catch (error) {
-    await session.abortTransaction();
-    session.endSession();
-    console.error("Manual add error:", error);
-    res.status(500).json({ error: error.message || 'Error adding student manually' });
   }
 };
 
@@ -484,48 +507,59 @@ export const bulkImportStudents = async (req, res) => {
         continue;
       }
 
-      let admissionNumber = row['Admission No'] || row['admissionNumber'];
-
-      if (!admissionNumber) {
-        errors.push(`Row ${i + 2}: Admission Number is missing.`);
-        continue;
-      }
-
       try {
-        const student = await Student.create({
-          admissionNumber: String(admissionNumber),
-          studentName: String(studentName),
-          fatherName: String(row['Father Name'] || row['fatherName'] || ''),
-          motherName: String(row['Mother Name'] || row['motherName'] || ''),
-          fatherPhone: String(row['Father Phone'] || row['fatherPhone'] || ''),
-          motherPhone: String(row['Mother Phone'] || row['motherPhone'] || ''),
-          address: String(row['Address'] || row['address'] || ''),
-          gender: String(row['Gender'] || row['Sex'] || row['gender'] || ''),
-          bloodGroup: String(row['Blood Group'] || row['bloodGroup'] || ''),
-          aadhaarNumber: String(row['Aadhar No'] || row['Aadhaar Number'] || row['aadhaarNumber'] || ''),
-          religion: String(row['Religion'] || row['religion'] || ''),
-          community: String(row['Community'] || row['community'] || ''),
-          caste: String(row['Caste'] || row['caste'] || ''),
-          RTE: String(row['RTE'] || row['RTE'] || ''),
-          nationality: String(row['Nationality'] || row['nationality'] || ''),
-          fatherOccupation: String(row['Father Occupation'] || row['fatherOccupation'] || ''),
-          motherOccupation: String(row['Mother Occupation'] || row['motherOccupation'] || ''),
-          guardian: String(row['Guardian Name'] || row['guardian'] || ''),
-          city: String(row['City'] || row['city'] || ''),
-          state: String(row['State'] || row['state'] || ''),
-          pincode: String(row['Pincode'] || row['pincode'] || ''),
-          dateOfBirth: (row['Date of Birth'] || row['DOB']) ? new Date(row['Date of Birth'] || row['DOB']) : null,
-          whatsappNumber: String(row['Whatsapp Number'] || row['whatsappNumber'] || row['Whatsapp No'] || ''),
-          emisNumber: String(row['EMIS No'] || row['emisNumber'] || row['EMIS Number'] || ''),
-          currentClass,
-          section: section || null,
-          addedById: req.user?.id
-        });
-        await assignClassDefaultFeesToStudent(student);
+        let studentRecord = null;
+
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+          try {
+            const result = await createStudentWithGeneratedAdmissionNumber({
+              studentName: String(studentName),
+              fatherName: String(row['Father Name'] || row['fatherName'] || ''),
+              motherName: String(row['Mother Name'] || row['motherName'] || ''),
+              fatherPhone: String(row['Father Phone'] || row['fatherPhone'] || ''),
+              motherPhone: String(row['Mother Phone'] || row['motherPhone'] || ''),
+              address: String(row['Address'] || row['address'] || ''),
+              gender: String(row['Gender'] || row['Sex'] || row['gender'] || ''),
+              bloodGroup: String(row['Blood Group'] || row['bloodGroup'] || ''),
+              aadhaarNumber: String(row['Aadhar No'] || row['Aadhaar Number'] || row['aadhaarNumber'] || ''),
+              religion: String(row['Religion'] || row['religion'] || ''),
+              community: String(row['Community'] || row['community'] || ''),
+              caste: String(row['Caste'] || row['caste'] || ''),
+              RTE: String(row['RTE'] || row['RTE'] || ''),
+              nationality: String(row['Nationality'] || row['nationality'] || ''),
+              fatherOccupation: String(row['Father Occupation'] || row['fatherOccupation'] || ''),
+              motherOccupation: String(row['Mother Occupation'] || row['motherOccupation'] || ''),
+              guardian: String(row['Guardian Name'] || row['guardian'] || ''),
+              city: String(row['City'] || row['city'] || ''),
+              state: String(row['State'] || row['state'] || ''),
+              pincode: String(row['Pincode'] || row['pincode'] || ''),
+              dateOfBirth: (row['Date of Birth'] || row['DOB']) ? new Date(row['Date of Birth'] || row['DOB']) : null,
+              whatsappNumber: String(row['Whatsapp Number'] || row['whatsappNumber'] || row['Whatsapp No'] || ''),
+              emisNumber: String(row['EMIS No'] || row['emisNumber'] || row['EMIS Number'] || ''),
+              currentClass,
+              section: section || null,
+              addedById: req.user?.id
+            });
+            studentRecord = result.student;
+            break;
+          } catch (err) {
+            if (isDuplicateAdmissionNumberError(err) && attempt < 3) {
+              continue;
+            }
+            throw err;
+          }
+        }
+
+        if (!studentRecord) {
+          errors.push(`Row ${i + 2}: Unable to generate a unique admission number.`);
+          continue;
+        }
+
+        await assignClassDefaultFeesToStudent(studentRecord);
         successCount++;
       } catch (err) {
         if (err.code === 11000) {
-          errors.push(`Row ${i + 2}: Admission Number ${admissionNumber} already exists.`);
+          errors.push(`Row ${i + 2}: Admission number collision while importing student.`);
         } else {
           errors.push(`Row ${i + 2}: Error saving to DB.`);
         }
@@ -619,7 +653,6 @@ export const updateStudent = async (req, res) => {
       address,
       currentClass,
       section,
-      admissionNumber,
       dateOfBirth,
       gender,
       bloodGroup,
@@ -805,7 +838,6 @@ export const updateStudent = async (req, res) => {
       address,
       currentClass: currentClassName,
       section,
-      admissionNumber,
       gender,
       bloodGroup,
       aadhaarNumber,

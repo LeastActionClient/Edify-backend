@@ -1,25 +1,18 @@
-import fs from 'fs';
-import path from 'path';
+import { getSettingsSnapshot, updateSettingsSnapshot } from '../services/settingsService.js';
 
-const settingsPath = path.join(process.cwd(), 'settings.json');
-
-export const getSettings = (req, res) => {
+export const getSettings = async (req, res) => {
   try {
-    if (!fs.existsSync(settingsPath)) {
-      fs.writeFileSync(settingsPath, JSON.stringify({}));
-    }
-    const data = fs.readFileSync(settingsPath, 'utf8');
-    res.json(JSON.parse(data));
+    const settings = await getSettingsSnapshot();
+    res.json(settings);
   } catch (error) {
     res.status(500).json({ error: 'Error reading settings' });
   }
 };
 
-export const updateSettings = (req, res) => {
+export const updateSettings = async (req, res) => {
   try {
-    const newSettings = req.body;
-    fs.writeFileSync(settingsPath, JSON.stringify(newSettings, null, 2));
-    res.json(newSettings);
+    const savedSettings = await updateSettingsSnapshot(req.body);
+    res.json(savedSettings);
   } catch (error) {
     res.status(500).json({ error: 'Error saving settings' });
   }
