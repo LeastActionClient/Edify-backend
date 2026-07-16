@@ -85,6 +85,29 @@ export const createPayment = async (req, res) => {
       return res.status(400).json({ error: 'No fees selected for payment' });
     }
 
+    // Self-heal any zero-amount StudentFee documents in MongoDB before balance validation
+    for (const feeId of studentFeeIds) {
+      const feeDoc = await StudentFee.findById(feeId);
+      if (feeDoc && (feeDoc.totalAmount === 0 || feeDoc.remainingAmount === 0) && feeDoc.paidAmount === 0) {
+        const cat = await FeeCategory.findById(feeDoc.feeCategoryId);
+        if (cat) {
+          let healedAmt = parseFloat(cat.amount || 0);
+          if (cat.name.toLowerCase() === 'uniform' && cat.pricing) {
+            const topPrice = parseFloat(cat.pricing.topPerMetre || 0);
+            const bottomPrice = parseFloat(cat.pricing.bottomPerMetre || 0);
+            const topLen = parseFloat(feeDoc.uniformDetails?.topLength || 0);
+            const bottomLen = parseFloat(feeDoc.uniformDetails?.bottomLength || 0);
+            healedAmt = (topLen * topPrice) + (bottomLen * bottomPrice);
+          }
+          if (healedAmt > 0) {
+            feeDoc.totalAmount = healedAmt;
+            feeDoc.remainingAmount = healedAmt;
+            await feeDoc.save();
+          }
+        }
+      }
+    }
+
     const unpaidFees = await StudentFee.find({ _id: { $in: studentFeeIds }, studentId });
     if (unpaidFees.length !== studentFeeIds.length) {
       return res.status(404).json({ error: 'Some fee records were not found or do not belong to this student' });

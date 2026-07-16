@@ -200,13 +200,34 @@ export const getStudentById = async (req, res) => {
     }
 
     const studentFeesRaw = await StudentFee.find({ studentId: id })
-      .populate('feeCategoryId')
-      .lean();
+      .populate('feeCategoryId');
       
-    const studentFees = studentFeesRaw.map(fee => ({
-      ...fee,
-      feeCategory: fee.feeCategoryId
-    }));
+    for (const f of studentFeesRaw) {
+      if ((f.totalAmount === 0 || f.remainingAmount === 0) && f.paidAmount === 0 && f.feeCategoryId) {
+        const cat = f.feeCategoryId;
+        let healedAmt = parseFloat(cat.amount || 0);
+        if (cat.name.toLowerCase() === 'uniform' && cat.pricing) {
+          const topPrice = parseFloat(cat.pricing.topPerMetre || 0);
+          const bottomPrice = parseFloat(cat.pricing.bottomPerMetre || 0);
+          const topLen = parseFloat(f.uniformDetails?.topLength || 0);
+          const bottomLen = parseFloat(f.uniformDetails?.bottomLength || 0);
+          healedAmt = (topLen * topPrice) + (bottomLen * bottomPrice);
+        }
+        if (healedAmt > 0) {
+          f.totalAmount = healedAmt;
+          f.remainingAmount = healedAmt;
+          await f.save();
+        }
+      }
+    }
+
+    const studentFees = studentFeesRaw.map(fee => {
+      const fObj = fee.toObject ? fee.toObject() : fee;
+      return {
+        ...fObj,
+        feeCategory: fObj.feeCategoryId
+      };
+    });
 
     const currentClassFees = studentFees.filter(f =>
       f.className === student.currentClass || (!f.className && !f.academicYear)
