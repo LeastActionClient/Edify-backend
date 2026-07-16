@@ -16,6 +16,7 @@ const paymentSchema = new mongoose.Schema({
   referenceNumber: { type: String },
   remarks: { type: String },
   status: { type: String, enum: ['PENDING', 'PARTIAL', 'PAID'], default: 'PAID' },
+  inventoryProcessed: { type: Boolean, default: false },
   recordedById: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });
 

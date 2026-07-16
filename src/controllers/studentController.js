@@ -14,8 +14,63 @@ import {
   Section,
   IncludedCharge,
   IncludedChargeStockTransaction,
-  Activity
+  Activity,
+  StockHistory
 } from '../models/index.js';
+
+const clampNonNegative = (value) => Math.max(0, Number(value) || 0);
+
+const recordIncludedChargeStock = async ({
+  includedChargeId,
+  type,
+  quantity,
+  previousStock,
+  newStock,
+  reason,
+  referenceType,
+  referenceId,
+  performedById
+}) => {
+  await IncludedChargeStockTransaction.create({
+    includedChargeId,
+    type,
+    quantity,
+    previousStock,
+    newStock,
+    reason,
+    referenceType,
+    referenceId,
+    performedById
+  });
+};
+
+const adjustIncludedChargeStock = async (chargeId, delta, meta = {}) => {
+  const charge = await IncludedCharge.findById(chargeId);
+  if (!charge) return null;
+
+  const previousStock = clampNonNegative(charge.stockQuantity);
+  const nextStock = previousStock + delta;
+  if (nextStock < 0) {
+    throw new Error(`Not enough stock for included charge ${charge.name}`);
+  }
+
+  charge.stockQuantity = nextStock;
+  await charge.save();
+
+  await recordIncludedChargeStock({
+    includedChargeId: charge._id,
+    type: delta >= 0 ? 'RETURN' : 'OUT',
+    quantity: Math.abs(delta),
+    previousStock,
+    newStock: nextStock,
+    performedById: meta.performedById,
+    reason: meta.reason,
+    referenceType: meta.referenceType,
+    referenceId: meta.referenceId
+  });
+
+  return charge;
+};
 
 export const assignClassDefaultFeesToStudent = async (student) => {
   try {
@@ -45,47 +100,26 @@ export const assignClassDefaultFeesToStudent = async (student) => {
 
     let baseFeeTotal = 0;
 
-    // For this student, we assign all mandatory categories and Uniform if defined in class/section defaultFees
+    // For this student, we assign ONLY mandatory categories (Base Fee) automatically
     for (const catId of Object.keys(defaultFees)) {
       const cat = validCatMap.get(catId);
       if (!cat) continue;
 
-      const isUniform = cat.name.toLowerCase() === 'uniform';
       const isMandatory = cat.mandatory;
 
-      if (isMandatory || isUniform) {
+      if (isMandatory) {
         const feeConfig = defaultFees[catId];
-        let amount = 0;
-        let uniformDetailsToSave = undefined;
+        const amount = typeof feeConfig === 'number' ? feeConfig : parseFloat(feeConfig?.amount || 0);
 
-        if (isUniform) {
-          amount = 0; // starts at 0 since lengths are 0
-          uniformDetailsToSave = { topLength: 0, bottomLength: 0 };
-        } else {
-          amount = typeof feeConfig === 'number' ? feeConfig : parseFloat(feeConfig?.amount || 0);
-        }
-
-        if (isUniform) {
-          const existing = await StudentFee.findOne({ studentId, feeCategoryId: catId });
-          if (!existing) {
-            await StudentFee.create({
-              studentId,
-              feeCategoryId: catId,
-              totalAmount: amount,
-              remainingAmount: amount,
-              paidAmount: 0,
-              uniformDetails: uniformDetailsToSave
-            });
-          }
-        } else if (amount > 0) {
+        if (amount > 0) {
           baseFeeTotal += amount;
-          const existing = await StudentFee.findOne({ studentId, feeCategoryId: catId });
-          if (existing) {
-            existing.totalAmount = amount;
-            existing.remainingAmount = Math.max(0, amount - existing.paidAmount);
-            await existing.save();
+          let studentFeeDoc = await StudentFee.findOne({ studentId, feeCategoryId: catId });
+          if (studentFeeDoc) {
+            studentFeeDoc.totalAmount = amount;
+            studentFeeDoc.remainingAmount = Math.max(0, amount - studentFeeDoc.paidAmount);
+            await studentFeeDoc.save();
           } else {
-            await StudentFee.create({
+            studentFeeDoc = await StudentFee.create({
               studentId,
               feeCategoryId: catId,
               totalAmount: amount,
@@ -197,62 +231,6 @@ export const getStudentById = async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: 'Error fetching student details' });
   }
-};
-
-
-
-const clampNonNegative = (value) => Math.max(0, Number(value) || 0);
-
-const recordIncludedChargeStock = async ({
-  includedChargeId,
-  type,
-  quantity,
-  previousStock,
-  newStock,
-  reason,
-  referenceType,
-  referenceId,
-  performedById
-}) => {
-  await IncludedChargeStockTransaction.create({
-    includedChargeId,
-    type,
-    quantity,
-    previousStock,
-    newStock,
-    reason,
-    referenceType,
-    referenceId,
-    performedById
-  });
-};
-
-const adjustIncludedChargeStock = async (chargeId, delta, meta = {}) => {
-  const charge = await IncludedCharge.findById(chargeId);
-  if (!charge) return null;
-
-  const previousStock = clampNonNegative(charge.stockQuantity);
-  const nextStock = previousStock + delta;
-  if (nextStock < 0) {
-    throw new Error(`Not enough stock for included charge ${charge.name}`);
-  }
-
-  charge.stockQuantity = nextStock;
-  await charge.save();
-
-  await recordIncludedChargeStock({
-    includedChargeId: charge._id,
-    type: delta >= 0 ? 'RETURN' : 'OUT',
-    quantity: Math.abs(delta),
-    previousStock,
-    newStock: nextStock,
-    performedById: meta.performedById,
-    reason: meta.reason,
-    referenceType: meta.referenceType,
-    referenceId: meta.referenceId
-  });
-
-  return charge;
 };
 
 const getClassDefaultFees = async (currentClass, section) => {
@@ -377,7 +355,7 @@ export const addStudentManually = async (req, res) => {
       currentClass,
       section,
       addedById: req.user?.id,
-      applicationId: applicationId || null
+      applicationId: applicationId || undefined
     }], { session });
 
     const selectedIncludedChargeIds = [...new Set(includedChargesIds.map(id => id?.toString()).filter(Boolean))];
@@ -475,6 +453,14 @@ export const addStudentManually = async (req, res) => {
     await session.abortTransaction();
     session.endSession();
     console.error("Manual add error:", error);
+    if (error.code === 11000) {
+      if (error.keyPattern && error.keyPattern.admissionNumber) {
+        return res.status(400).json({ error: 'Admission Number already exists. Please use a unique Admission Number.' });
+      }
+      if (error.keyPattern && error.keyPattern.applicationId) {
+        return res.status(400).json({ error: 'This Application has already been linked to an existing student.' });
+      }
+    }
     res.status(500).json({ error: error.message || 'Error adding student manually' });
   }
 };
@@ -630,6 +616,29 @@ export const deleteStudent = async (req, res) => {
       });
     }
 
+    const assignedFees = await StudentFee.find({ studentId: id });
+    for (const sf of assignedFees) {
+      if (sf.feeCategoryId && sf.isStockDeducted) {
+        const cat = await FeeCategory.findById(sf.feeCategoryId);
+        if (cat && cat.isStockItem) {
+          const prev = cat.currentStock || 0;
+          cat.currentStock = prev + 1;
+          await cat.save();
+          await StockHistory.create({
+            categoryId: cat._id,
+            categoryName: cat.name,
+            previousStock: prev,
+            updatedStock: prev + 1,
+            difference: 1,
+            action: 'STUDENT_DELETION',
+            referenceType: 'Student',
+            referenceId: id,
+            updatedBy: req.user?.id
+          });
+        }
+      }
+    }
+
     await Invoice.deleteMany({ studentId: id });
     await Payment.deleteMany({ studentId: id });
     await StudentFee.deleteMany({ studentId: id });
@@ -663,6 +672,26 @@ export const removeFeeFromStudent = async (req, res) => {
       return res.status(400).json({ error: 'Cannot delete a fee that has already been partially or fully paid' });
     }
 
+    if (fee.feeCategoryId && fee.isStockDeducted) {
+      const cat = await FeeCategory.findById(fee.feeCategoryId);
+      if (cat && cat.isStockItem) {
+        const prev = cat.currentStock || 0;
+        cat.currentStock = prev + 1;
+        await cat.save();
+        await StockHistory.create({
+          categoryId: cat._id,
+          categoryName: cat.name,
+          previousStock: prev,
+          updatedStock: prev + 1,
+          difference: 1,
+          action: 'STUDENT_REMOVAL',
+          referenceType: 'Student',
+          referenceId: studentId,
+          updatedBy: req.user?.id
+        });
+      }
+    }
+
     await StudentFee.findByIdAndDelete(feeId);
 
     res.json({ message: 'Fee assignment removed successfully' });
@@ -690,6 +719,7 @@ export const updateStudent = async (req, res) => {
       bloodGroup,
       aadhaarNumber,
       religion,
+      community,
       caste,
       nationality,
       email,
@@ -715,7 +745,9 @@ export const updateStudent = async (req, res) => {
       activitiesTotal,
       grandTotal,
       includedChargesIds,
-      activitiesIds
+      activitiesIds,
+      selectedFeeCategoryIds,
+      uniformDetails
     } = req.body;
 
     const valError = validateStudentInput({ caste, emisNo, emisNumber, guardianName, guardian, whatsappNumber });
@@ -739,6 +771,116 @@ export const updateStudent = async (req, res) => {
 
     const currentClassName = currentClass || currentStudent.currentClass;
     const currentAcademicYear = academicYear || currentStudent.academicYear;
+
+    if (Array.isArray(selectedFeeCategoryIds)) {
+      const getCatIdStr = (val) => {
+        if (!val) return '';
+        if (typeof val === 'string') return val;
+        if (val._id) return val._id.toString();
+        return val.toString();
+      };
+
+      console.log("[RUNTIME DEBUG Step 3 - Backend] req.body received:", req.body);
+      console.log("[RUNTIME DEBUG Step 3 - Backend] selectedFeeCategoryIds received:", selectedFeeCategoryIds);
+
+      const nextFeeCatIds = [...new Set(selectedFeeCategoryIds.map(value => getCatIdStr(value)).filter(Boolean))];
+      
+      const systemCats = await FeeCategory.find({ name: { $in: ['Included Charges', 'Activities', 'Base Fee', 'Full Fees'] } });
+      const systemCatIds = new Set(systemCats.map(c => c._id.toString()));
+
+      const currentAssignedFees = await StudentFee.find({ studentId: id });
+      const previousFeeCatIds = currentAssignedFees
+        .map(f => getCatIdStr(f.feeCategoryId))
+        .filter(catId => catId && !systemCatIds.has(catId));
+
+      const previousSet = new Set(previousFeeCatIds);
+      const nextSet = new Set(nextFeeCatIds.filter(catId => !systemCatIds.has(catId)));
+
+      console.log("[RUNTIME DEBUG Step 4 - Backend] previousSet (DB Assigned):", Array.from(previousSet));
+      console.log("[RUNTIME DEBUG Step 5 - Backend] nextSet (Form Requested):", Array.from(nextSet));
+
+      const removedFeeCatIds = previousFeeCatIds.filter(catId => !nextSet.has(catId));
+      const addedFeeCatIds = nextFeeCatIds.filter(catId => !previousSet.has(catId));
+
+      console.log("[RUNTIME DEBUG Step 6 - Backend] Difference addedFeeCatIds:", addedFeeCatIds);
+      console.log("[RUNTIME DEBUG Step 6 - Backend] Difference removedFeeCatIds:", removedFeeCatIds);
+
+      // Validate stock availability for newly added items
+      if (addedFeeCatIds.length > 0) {
+        for (const catId of addedFeeCatIds) {
+          const cat = await FeeCategory.findById(catId);
+          if (cat && cat.isStockItem) {
+            if ((cat.currentStock || 0) <= 0) {
+              return res.status(400).json({ error: `Cannot assign ${cat.name}. It is currently out of stock.` });
+            }
+          }
+        }
+      }
+
+      // Process removed items: delete unpaid StudentFee
+      for (const catId of removedFeeCatIds) {
+        const existingStudentFee = currentAssignedFees.find(f => getCatIdStr(f.feeCategoryId) === catId);
+        if (existingStudentFee && existingStudentFee.paidAmount === 0) {
+          await StudentFee.findByIdAndDelete(existingStudentFee._id);
+        }
+      }
+
+      const classDoc = await Class.findOne({ name: currentClassName });
+      let defaultFees = classDoc?.defaultFees || {};
+
+      // Process newly added items: create StudentFee (without deducting stock)
+      for (const catId of addedFeeCatIds) {
+        const cat = await FeeCategory.findById(catId);
+        if (!cat) continue;
+
+        let amount = 0;
+        let uniformDetailsToSave = undefined;
+
+        if (cat.name.toLowerCase() === 'uniform') {
+          const pricing = defaultFees[catId]?.pricing || {};
+          const topPrice = parseFloat(pricing.topPerMetre || 0);
+          const bottomPrice = parseFloat(pricing.bottomPerMetre || 0);
+          const topLen = parseFloat(uniformDetails?.topLength || 0);
+          const bottomLen = parseFloat(uniformDetails?.bottomLength || 0);
+          amount = (topLen * topPrice) + (bottomLen * bottomPrice);
+          uniformDetailsToSave = { topLength: topLen, bottomLength: bottomLen };
+        } else {
+          const feeConfig = defaultFees[catId];
+          amount = typeof feeConfig === 'number' ? feeConfig : parseFloat(feeConfig?.amount || 0);
+        }
+
+        await StudentFee.create({
+          studentId: id,
+          feeCategoryId: catId,
+          totalAmount: amount,
+          remainingAmount: amount,
+          paidAmount: 0,
+          className: currentClassName,
+          academicYear: currentAcademicYear,
+          uniformDetails: uniformDetailsToSave
+        });
+      }
+
+      // Update uniformDetails if uniform remains assigned
+      if (uniformDetails) {
+        const uniformCat = await FeeCategory.findOne({ name: { $regex: /^uniform$/i } });
+        if (uniformCat && nextSet.has(uniformCat._id.toString())) {
+          const uniFee = await StudentFee.findOne({ studentId: id, feeCategoryId: uniformCat._id });
+          if (uniFee) {
+            const pricing = defaultFees[uniformCat._id.toString()]?.pricing || {};
+            const topPrice = parseFloat(pricing.topPerMetre || 0);
+            const bottomPrice = parseFloat(pricing.bottomPerMetre || 0);
+            const topLen = parseFloat(uniformDetails.topLength || 0);
+            const bottomLen = parseFloat(uniformDetails.bottomLength || 0);
+            const newAmt = (topLen * topPrice) + (bottomLen * bottomPrice);
+            uniFee.totalAmount = newAmt;
+            uniFee.remainingAmount = Math.max(0, newAmt - uniFee.paidAmount);
+            uniFee.uniformDetails = { topLength: topLen, bottomLength: bottomLen };
+            await uniFee.save();
+          }
+        }
+      }
+    }
 
     if (Array.isArray(includedChargesIds)) {
       const nextIncludedChargeIds = [...new Set(includedChargesIds.map(value => value?.toString()).filter(Boolean))];
@@ -922,7 +1064,7 @@ export const updateStudent = async (req, res) => {
     res.json(student);
   } catch (error) {
     console.error("Update student error:", error);
-    res.status(500).json({ error: 'Error updating student details' });
+    res.status(500).json({ error: error.message || 'Error updating student details' });
   }
 };
 

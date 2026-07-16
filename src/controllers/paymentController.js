@@ -125,6 +125,19 @@ export const createPayment = async (req, res) => {
       }
     }
 
+    // Pre-validate stock availability for any stock items in payment
+    for (const alloc of feeAllocations) {
+      const studentFee = unpaidFees.find(f => f._id.toString() === alloc.studentFeeId.toString());
+      if (studentFee && studentFee.feeCategoryId) {
+        const cat = await FeeCategory.findById(studentFee.feeCategoryId);
+        if (cat && cat.isStockItem) {
+          if ((cat.currentStock || 0) <= 0) {
+            return res.status(400).json({ error: `Insufficient stock for ${cat.name}. Current stock is 0.` });
+          }
+        }
+      }
+    }
+
     const payment = await Payment.create({
       studentId,
       isFullPayment: false, // We mark it as false so invoice prints individual lines
@@ -134,9 +147,44 @@ export const createPayment = async (req, res) => {
       referenceNumber,
       remarks,
       status: amount === totalRemaining ? 'PAID' : 'PARTIAL',
+      inventoryProcessed: false,
       recordedById: req.user.id
     });
     
+    // Deduct stock atomically and set inventoryProcessed flag
+    for (const alloc of feeAllocations) {
+      const studentFee = unpaidFees.find(f => f._id.toString() === alloc.studentFeeId.toString());
+      if (studentFee && studentFee.feeCategoryId) {
+        const cat = await FeeCategory.findById(studentFee.feeCategoryId);
+        if (cat && cat.isStockItem) {
+          const updatedCat = await FeeCategory.findOneAndUpdate(
+            { _id: cat._id, currentStock: { $gte: 1 } },
+            { $inc: { currentStock: -1 } },
+            { new: true }
+          );
+
+          if (!updatedCat) {
+            return res.status(400).json({ error: `Insufficient stock for ${cat.name}. Stock was depleted by a concurrent transaction.` });
+          }
+
+          await StockHistory.create({
+            categoryId: cat._id,
+            categoryName: cat.name,
+            previousStock: updatedCat.currentStock + 1,
+            updatedStock: updatedCat.currentStock,
+            difference: -1,
+            action: 'ASSIGNED',
+            referenceType: 'Payment',
+            referenceId: payment._id,
+            updatedBy: req.user.id
+          });
+        }
+      }
+    }
+
+    payment.inventoryProcessed = true;
+    await payment.save();
+
     const invNum = await generateInvoiceNumber();
     const invoice = await Invoice.create({
       invoiceNumber: invNum,
@@ -153,7 +201,7 @@ export const createPayment = async (req, res) => {
     res.status(201).json({ ...payment.toObject(), invoice });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: 'Error creating payment' });
+    res.status(500).json({ error: error.message || 'Error creating payment' });
   }
 };
 
@@ -369,6 +417,41 @@ export const deletePayment = async (req, res) => {
       await StudentFee.findByIdAndUpdate(payment.studentFeeId, {
         $inc: { paidAmount: -payment.amount, remainingAmount: payment.amount }
       });
+    }
+
+    // Restore stock if inventory was processed for this payment
+    if (payment.inventoryProcessed) {
+      const allocatedFeeIds = payment.feeAllocations && payment.feeAllocations.length > 0
+        ? payment.feeAllocations.map(a => a.studentFeeId)
+        : (payment.studentFeeId ? [payment.studentFeeId] : []);
+
+      for (const feeId of allocatedFeeIds) {
+        const studentFee = await StudentFee.findById(feeId);
+        if (studentFee && studentFee.feeCategoryId) {
+          const cat = await FeeCategory.findById(studentFee.feeCategoryId);
+          if (cat && cat.isStockItem) {
+            const updatedCat = await FeeCategory.findOneAndUpdate(
+              { _id: cat._id },
+              { $inc: { currentStock: 1 } },
+              { new: true }
+            );
+
+            if (updatedCat) {
+              await StockHistory.create({
+                categoryId: cat._id,
+                categoryName: cat.name,
+                previousStock: updatedCat.currentStock - 1,
+                updatedStock: updatedCat.currentStock,
+                difference: 1,
+                action: 'REMOVED',
+                referenceType: 'Payment',
+                referenceId: payment._id,
+                updatedBy: req.user?.id
+              });
+            }
+          }
+        }
+      }
     }
 
     await Invoice.deleteMany({ paymentId: id });
