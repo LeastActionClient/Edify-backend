@@ -837,7 +837,7 @@ export const updateStudent = async (req, res) => {
         let uniformDetailsToSave = undefined;
 
         if (cat.name.toLowerCase() === 'uniform') {
-          const pricing = defaultFees[catId]?.pricing || {};
+          const pricing = defaultFees[catId]?.pricing || cat.pricing || {};
           const topPrice = parseFloat(pricing.topPerMetre || 0);
           const bottomPrice = parseFloat(pricing.bottomPerMetre || 0);
           const topLen = parseFloat(uniformDetails?.topLength || 0);
@@ -846,7 +846,13 @@ export const updateStudent = async (req, res) => {
           uniformDetailsToSave = { topLength: topLen, bottomLength: bottomLen };
         } else {
           const feeConfig = defaultFees[catId];
-          amount = typeof feeConfig === 'number' ? feeConfig : parseFloat(feeConfig?.amount || 0);
+          if (typeof feeConfig === 'number') {
+            amount = feeConfig;
+          } else if (feeConfig && feeConfig.amount !== undefined && feeConfig.amount !== null && Number(feeConfig.amount) > 0) {
+            amount = parseFloat(feeConfig.amount);
+          } else {
+            amount = parseFloat(cat.amount || 0);
+          }
         }
 
         await StudentFee.create({
@@ -867,7 +873,7 @@ export const updateStudent = async (req, res) => {
         if (uniformCat && nextSet.has(uniformCat._id.toString())) {
           const uniFee = await StudentFee.findOne({ studentId: id, feeCategoryId: uniformCat._id });
           if (uniFee) {
-            const pricing = defaultFees[uniformCat._id.toString()]?.pricing || {};
+            const pricing = defaultFees[uniformCat._id.toString()]?.pricing || uniformCat.pricing || {};
             const topPrice = parseFloat(pricing.topPerMetre || 0);
             const bottomPrice = parseFloat(pricing.bottomPerMetre || 0);
             const topLen = parseFloat(uniformDetails.topLength || 0);
@@ -877,6 +883,35 @@ export const updateStudent = async (req, res) => {
             uniFee.remainingAmount = Math.max(0, newAmt - uniFee.paidAmount);
             uniFee.uniformDetails = { topLength: topLen, bottomLength: bottomLen };
             await uniFee.save();
+          }
+        }
+      }
+
+      // Self-heal any zero-amount StudentFee records for assigned categories
+      const studentFeesToCheck = await StudentFee.find({ studentId: id });
+      for (const f of studentFeesToCheck) {
+        if ((f.totalAmount || 0) === 0 && f.paidAmount === 0) {
+          const cat = await FeeCategory.findById(f.feeCategoryId);
+          if (cat) {
+            let catAmt = 0;
+            if (cat.name.toLowerCase() === 'uniform') {
+              const pricing = defaultFees[cat._id.toString()]?.pricing || cat.pricing || {};
+              const topPrice = parseFloat(pricing.topPerMetre || 0);
+              const bottomPrice = parseFloat(pricing.bottomPerMetre || 0);
+              const topLen = parseFloat(f.uniformDetails?.topLength || uniformDetails?.topLength || 0);
+              const bottomLen = parseFloat(f.uniformDetails?.bottomLength || uniformDetails?.bottomLength || 0);
+              catAmt = (topLen * topPrice) + (bottomLen * bottomPrice);
+            } else {
+              const feeConfig = defaultFees[cat._id.toString()];
+              if (typeof feeConfig === 'number') catAmt = feeConfig;
+              else if (feeConfig?.amount) catAmt = parseFloat(feeConfig.amount);
+              else catAmt = parseFloat(cat.amount || 0);
+            }
+            if (catAmt > 0) {
+              f.totalAmount = catAmt;
+              f.remainingAmount = catAmt;
+              await f.save();
+            }
           }
         }
       }
@@ -1010,7 +1045,10 @@ export const updateStudent = async (req, res) => {
     const resolvedBaseFee = normalizeNumber(baseFee, currentStudent.baseFee || 0);
     const resolvedIncludedChargesTotal = normalizeNumber(includedChargesTotal, currentStudent.includedChargesTotal || 0);
     const resolvedActivitiesTotal = normalizeNumber(activitiesTotal, currentStudent.activitiesTotal || 0);
-    const resolvedGrandTotal = normalizeNumber(grandTotal, resolvedBaseFee + resolvedIncludedChargesTotal + resolvedActivitiesTotal);
+    
+    const allFinalStudentFees = await StudentFee.find({ studentId: id });
+    const calculatedGrandTotal = allFinalStudentFees.reduce((sum, f) => sum + (f.totalAmount || 0), 0);
+    const resolvedGrandTotal = calculatedGrandTotal > 0 ? calculatedGrandTotal : normalizeNumber(grandTotal, resolvedBaseFee + resolvedIncludedChargesTotal + resolvedActivitiesTotal);
 
     const student = await Student.findByIdAndUpdate(id, {
       studentName,
