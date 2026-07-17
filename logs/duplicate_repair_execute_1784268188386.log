@@ -1,0 +1,64 @@
+==========================================================
+STUDENT FEE DUPLICATE REPAIR MIGRATION
+Mode: EXECUTE MODE (Applying Changes)
+Time: 2026-07-17T06:03:04.348Z
+==========================================================
+
+Connecting to MongoDB...
+Successfully connected to MongoDB.
+
+Total StudentFee records scanned: 158
+Total duplicate groups found: 7
+
+Payment reference check complete. Total distinct StudentFee IDs referenced in payments: 28
+
+--- Group 1/7 [Key: 6a4f5945ba929cc5efc98430_6a50c7e7e3a1b1c75a5e9440] (2 docs) ---
+  Paid/Referenced docs count: 0
+  Unpaid/Unreferenced docs count: 2
+  Keeper (Unpaid Best): 6a55cc26bacf363ef326b068 (Total: 1000, Remaining: 1000, Created: Tue Jul 14 2026 11:11:58 GMT+0530 (India Standard Time))
+  Marked for deletion (Unpaid duplicate): 6a55cc26bacf363ef326b05d (Total: 1000, Remaining: 1000)
+--- Group 2/7 [Key: 6a4f5945ba929cc5efc98430_6a50c7f0e3a1b1c75a5e9451] (2 docs) ---
+  Paid/Referenced docs count: 0
+  Unpaid/Unreferenced docs count: 2
+  Keeper (Unpaid Best): 6a55cc27bacf363ef326b06d (Total: 1000, Remaining: 1000, Created: Tue Jul 14 2026 11:11:59 GMT+0530 (India Standard Time))
+  Marked for deletion (Unpaid duplicate): 6a55cc26bacf363ef326b061 (Total: 1000, Remaining: 1000)
+--- Group 3/7 [Key: 6a4f5945ba929cc5efc98430_6a50d0f054d41c2c524f0939] (2 docs) ---
+  Paid/Referenced docs count: 0
+  Unpaid/Unreferenced docs count: 2
+  Keeper (Unpaid Best): 6a55cc27bacf363ef326b072 (Total: 0, Remaining: 0, Created: Tue Jul 14 2026 11:11:59 GMT+0530 (India Standard Time))
+  Marked for deletion (Unpaid duplicate): 6a55cc26bacf363ef326b065 (Total: 0, Remaining: 0)
+--- Group 4/7 [Key: 6a4f59caba929cc5efc9843b_6a50c7dce3a1b1c75a5e942f] (2 docs) ---
+  Paid/Referenced docs count: 0
+  Unpaid/Unreferenced docs count: 2
+  Keeper (Unpaid Best): 6a55cc29bacf363ef326b099 (Total: 1000, Remaining: 1000, Created: Tue Jul 14 2026 11:12:01 GMT+0530 (India Standard Time))
+  Marked for deletion (Unpaid duplicate): 6a55cc28bacf363ef326b090 (Total: 1000, Remaining: 1000)
+--- Group 5/7 [Key: 6a4f59caba929cc5efc9843b_6a50c7e7e3a1b1c75a5e9440] (2 docs) ---
+  Paid/Referenced docs count: 0
+  Unpaid/Unreferenced docs count: 2
+  Keeper (Unpaid Best): 6a55cc29bacf363ef326b09f (Total: 1000, Remaining: 1000, Created: Tue Jul 14 2026 11:12:01 GMT+0530 (India Standard Time))
+  Marked for deletion (Unpaid duplicate): 6a55cc28bacf363ef326b095 (Total: 1000, Remaining: 1000)
+--- Group 6/7 [Key: 6a4f59caba929cc5efc9843b_6a50c7f0e3a1b1c75a5e9451] (2 docs) ---
+  Paid/Referenced docs count: 0
+  Unpaid/Unreferenced docs count: 2
+  Keeper (Unpaid Best): 6a55cc29bacf363ef326b0a5 (Total: 1000, Remaining: 1000, Created: Tue Jul 14 2026 11:12:01 GMT+0530 (India Standard Time))
+  Marked for deletion (Unpaid duplicate): 6a55cc29bacf363ef326b09b (Total: 1000, Remaining: 1000)
+--- Group 7/7 [Key: 6a4f59caba929cc5efc9843b_6a50d0f054d41c2c524f0939] (3 docs) ---
+  Paid/Referenced docs count: 0
+  Unpaid/Unreferenced docs count: 3
+  Keeper (Unpaid Best): 6a55cc2abacf363ef326b0b4 (Total: 0, Remaining: 0, Created: Tue Jul 14 2026 11:12:02 GMT+0530 (India Standard Time))
+  Marked for deletion (Unpaid duplicate): 6a55cc29bacf363ef326b0aa (Total: 0, Remaining: 0)
+  Marked for deletion (Unpaid duplicate): 6a55cc29bacf363ef326b0a1 (Total: 0, Remaining: 0)
+
+==========================================================
+MIGRATION SUMMARY
+==========================================================
+Mode:                         EXECUTE MODE (Applying Changes)
+Total StudentFee Scanned:     158
+Total Duplicate Groups:       7
+Total Duplicate Extra Docs:   8
+Total Records Repaired/Deleted: 8
+Total Records Skipped:        0
+Total Records Manual Review:  0
+Repaired Record IDs:          ["6a55cc26bacf363ef326b05d","6a55cc26bacf363ef326b061","6a55cc26bacf363ef326b065","6a55cc28bacf363ef326b090","6a55cc28bacf363ef326b095","6a55cc29bacf363ef326b09b","6a55cc29bacf363ef326b0aa","6a55cc29bacf363ef326b0a1"]
+Manual Review Record IDs:     []
+==========================================================

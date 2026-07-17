@@ -207,6 +207,9 @@ export const assignFeeToStudent = async (req, res) => {
 
     if (existingFees.length > 0) {
       let studentFee = existingFees[0];
+      if (studentFee.paidAmount > 0 && Math.abs(studentFee.totalAmount - parseFloat(totalAmount)) > 0.01) {
+        return res.status(400).json({ error: 'Cannot modify fee amount because payments have already been recorded for this fee.' });
+      }
       studentFee = await StudentFee.findByIdAndUpdate(
         studentFee._id,
         {
@@ -217,8 +220,10 @@ export const assignFeeToStudent = async (req, res) => {
       ).populate('feeCategoryId');
       
       if (existingFees.length > 1) {
-        const idsToDelete = existingFees.slice(1).map(f => f._id);
-        await StudentFee.deleteMany({ _id: { $in: idsToDelete } });
+        const idsToDelete = existingFees.slice(1).filter(f => f.paidAmount === 0).map(f => f._id);
+        if (idsToDelete.length > 0) {
+          await StudentFee.deleteMany({ _id: { $in: idsToDelete } });
+        }
       }
       
       // Recalculate totals
@@ -342,16 +347,20 @@ export const assignBulkFee = async (req, res) => {
 
         if (isMandatory) {
           if (existing) {
-            existing.totalAmount = amount;
-            existing.remainingAmount = Math.max(0, amount - existing.paidAmount);
-            await existing.save();
+            if ((existing.paidAmount || 0) === 0) {
+              existing.totalAmount = amount;
+              existing.remainingAmount = amount;
+              await existing.save();
+            }
           } else if (amount > 0) {
             await StudentFee.create({
               studentId,
               feeCategoryId: catId,
               totalAmount: amount,
               remainingAmount: amount,
-              paidAmount: 0
+              paidAmount: 0,
+              className: student.currentClass,
+              academicYear: student.academicYear
             });
           }
         }
