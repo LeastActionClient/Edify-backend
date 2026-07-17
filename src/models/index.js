@@ -16,3 +16,4 @@ export { default as Activity } from './Activity.js';
 export { default as StudentIncludedCharge } from './StudentIncludedCharge.js';
 export { default as StudentActivity } from './StudentActivity.js';
 export { default as ExportLog } from './ExportLog.js';
+export { default as StockHistory } from './StockHistory.js';

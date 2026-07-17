@@ -11,7 +11,8 @@ const studentFeeSchema = new mongoose.Schema({
   uniformDetails: {
     topLength: { type: Number, default: 0 },
     bottomLength: { type: Number, default: 0 }
-  }
+  },
+  isStockDeducted: { type: Boolean, default: false }
 }, { timestamps: true });
 
 export default mongoose.model('StudentFee', studentFeeSchema);

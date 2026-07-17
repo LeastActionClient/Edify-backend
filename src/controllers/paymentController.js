@@ -386,6 +386,37 @@ export const createPayment = async (req, res) => {
       return res.status(400).json({ error: 'No fees selected for payment' });
     }
 
+    // Self-heal any zero-amount StudentFee documents in MongoDB before balance validation
+    for (const feeId of studentFeeIds) {
+      const feeDoc = await StudentFee.findById(feeId);
+      if (feeDoc && (feeDoc.totalAmount === 0 || feeDoc.remainingAmount === 0) && feeDoc.paidAmount === 0) {
+        const cat = await FeeCategory.findById(feeDoc.feeCategoryId);
+        if (cat) {
+          let healedAmt = parseFloat(cat.amount || 0);
+          if (cat.name.toLowerCase() === 'uniform' && cat.pricing) {
+            const topPrice = parseFloat(cat.pricing.topPerMetre || 0);
+            const bottomPrice = parseFloat(cat.pricing.bottomPerMetre || 0);
+            const topLen = parseFloat(feeDoc.uniformDetails?.topLength || 0);
+            const bottomLen = parseFloat(feeDoc.uniformDetails?.bottomLength || 0);
+            healedAmt = (topLen * topPrice) + (bottomLen * bottomPrice);
+          }
+          if (healedAmt <= 0) {
+            const classDoc = await Class.findOne({ name: feeDoc.className });
+            const feeConfig = classDoc?.defaultFees?.[cat._id.toString()];
+            if (typeof feeConfig === 'number' && feeConfig > 0) healedAmt = feeConfig;
+            else if (feeConfig?.amount && parseFloat(feeConfig.amount) > 0) healedAmt = parseFloat(feeConfig.amount);
+            else healedAmt = 100;
+          }
+          if (healedAmt > 0) {
+            await StudentFee.updateOne(
+              { _id: feeDoc._id },
+              { $set: { totalAmount: healedAmt, remainingAmount: healedAmt } }
+            );
+          }
+        }
+      }
+    }
+
     const unpaidFees = await StudentFee.find({ _id: { $in: studentFeeIds }, studentId });
     if (unpaidFees.length !== studentFeeIds.length) {
       return res.status(404).json({ error: 'Some fee records were not found or do not belong to this student' });
@@ -393,7 +424,9 @@ export const createPayment = async (req, res) => {
 
     const totalRemaining = unpaidFees.reduce((sum, f) => sum + f.remainingAmount, 0);
     if (amount > totalRemaining) {
-      return res.status(400).json({ error: 'Amount exceeds total remaining balance for selected fees' });
+      return res.status(400).json({
+        error: `Payment amount (Rs. ${amount}) cannot exceed the total remaining balance (Rs. ${totalRemaining}) for the selected fees.`
+      });
     }
 
     let amountLeftToDistribute = amount;
@@ -426,6 +459,19 @@ export const createPayment = async (req, res) => {
       }
     }
 
+    // Pre-validate stock availability for any stock items in payment
+    for (const alloc of feeAllocations) {
+      const studentFee = unpaidFees.find(f => f._id.toString() === alloc.studentFeeId.toString());
+      if (studentFee && studentFee.feeCategoryId) {
+        const cat = await FeeCategory.findById(studentFee.feeCategoryId);
+        if (cat && cat.isStockItem) {
+          if ((cat.currentStock || 0) <= 0) {
+            return res.status(400).json({ error: `Insufficient stock for ${cat.name}. Current stock is 0.` });
+          }
+        }
+      }
+    }
+
     const payment = await Payment.create({
       studentId,
       isFullPayment: false, // We mark it as false so invoice prints individual lines
@@ -435,9 +481,44 @@ export const createPayment = async (req, res) => {
       referenceNumber,
       remarks,
       status: amount === totalRemaining ? 'PAID' : 'PARTIAL',
+      inventoryProcessed: false,
       recordedById: req.user.id
     });
     
+    // Deduct stock atomically and set inventoryProcessed flag
+    for (const alloc of feeAllocations) {
+      const studentFee = unpaidFees.find(f => f._id.toString() === alloc.studentFeeId.toString());
+      if (studentFee && studentFee.feeCategoryId) {
+        const cat = await FeeCategory.findById(studentFee.feeCategoryId);
+        if (cat && cat.isStockItem) {
+          const updatedCat = await FeeCategory.findOneAndUpdate(
+            { _id: cat._id, currentStock: { $gte: 1 } },
+            { $inc: { currentStock: -1 } },
+            { new: true }
+          );
+
+          if (!updatedCat) {
+            return res.status(400).json({ error: `Insufficient stock for ${cat.name}. Stock was depleted by a concurrent transaction.` });
+          }
+
+          await StockHistory.create({
+            categoryId: cat._id,
+            categoryName: cat.name,
+            previousStock: updatedCat.currentStock + 1,
+            updatedStock: updatedCat.currentStock,
+            difference: -1,
+            action: 'ASSIGNED',
+            referenceType: 'Payment',
+            referenceId: payment._id,
+            updatedBy: req.user.id
+          });
+        }
+      }
+    }
+
+    payment.inventoryProcessed = true;
+    await payment.save();
+
     const invNum = await generateInvoiceNumber();
     const invoice = await Invoice.create({
       invoiceNumber: invNum,
@@ -454,7 +535,7 @@ export const createPayment = async (req, res) => {
     res.status(201).json({ ...payment.toObject(), invoice });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: 'Error creating payment' });
+    res.status(500).json({ error: error.message || 'Error creating payment' });
   }
 };
 
@@ -596,6 +677,41 @@ export const deletePayment = async (req, res) => {
       await StudentFee.findByIdAndUpdate(payment.studentFeeId, {
         $inc: { paidAmount: -payment.amount, remainingAmount: payment.amount }
       });
+    }
+
+    // Restore stock if inventory was processed for this payment
+    if (payment.inventoryProcessed) {
+      const allocatedFeeIds = payment.feeAllocations && payment.feeAllocations.length > 0
+        ? payment.feeAllocations.map(a => a.studentFeeId)
+        : (payment.studentFeeId ? [payment.studentFeeId] : []);
+
+      for (const feeId of allocatedFeeIds) {
+        const studentFee = await StudentFee.findById(feeId);
+        if (studentFee && studentFee.feeCategoryId) {
+          const cat = await FeeCategory.findById(studentFee.feeCategoryId);
+          if (cat && cat.isStockItem) {
+            const updatedCat = await FeeCategory.findOneAndUpdate(
+              { _id: cat._id },
+              { $inc: { currentStock: 1 } },
+              { new: true }
+            );
+
+            if (updatedCat) {
+              await StockHistory.create({
+                categoryId: cat._id,
+                categoryName: cat.name,
+                previousStock: updatedCat.currentStock - 1,
+                updatedStock: updatedCat.currentStock,
+                difference: 1,
+                action: 'REMOVED',
+                referenceType: 'Payment',
+                referenceId: payment._id,
+                updatedBy: req.user?.id
+              });
+            }
+          }
+        }
+      }
     }
 
     await Invoice.deleteMany({ paymentId: id });

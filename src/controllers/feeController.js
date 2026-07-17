@@ -1,4 +1,5 @@
-import { FeeCategory, StudentFee, Student, Class, Section } from '../models/index.js';
+import mongoose from 'mongoose';
+import { FeeCategory, StudentFee, Student, Class, Section, StockHistory } from '../models/index.js';
 
 const recalculateStudentTotals = async (studentId) => {
   const student = await Student.findById(studentId);
@@ -34,30 +35,124 @@ export const getFeeCategories = async (req, res) => {
 
 export const createFeeCategory = async (req, res) => {
   try {
-    const { name, isEnabled, mandatory } = req.body;
+    const { name, isEnabled, mandatory, isStockItem, initialStock, currentStock } = req.body;
+    
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Category Name is required.' });
+    }
+
+    const trimmedName = name.trim();
+    const existing = await FeeCategory.findOne({ name: { $regex: new RegExp(`^${trimmedName}$`, 'i') } });
+    if (existing) {
+      return res.status(400).json({ error: 'A fee category with this name already exists. Please choose a different name.' });
+    }
+
+    let parsedStock = 0;
+    if (isStockItem) {
+      const stockInput = currentStock !== undefined ? currentStock : initialStock;
+      parsedStock = parseInt(stockInput, 10);
+      if (isNaN(parsedStock) || parsedStock < 0) {
+        return res.status(400).json({ error: 'Initial Stock must be a positive whole number.' });
+      }
+    }
+
     const category = await FeeCategory.create({ 
-      name, 
+      name: trimmedName, 
       isEnabled: isEnabled ?? true, 
-      mandatory: mandatory ?? false 
+      mandatory: mandatory ?? false,
+      isStockItem: !!isStockItem,
+      currentStock: isStockItem ? parsedStock : 0
     });
+
+    if (isStockItem && parsedStock > 0) {
+      await StockHistory.create({
+        categoryId: category._id,
+        categoryName: category.name,
+        previousStock: 0,
+        updatedStock: parsedStock,
+        difference: parsedStock,
+        action: 'INITIAL_STOCK_CREATION',
+        updatedBy: req.user?.id
+      });
+    }
+
     res.status(201).json(category);
   } catch (error) {
-    res.status(500).json({ error: 'Error creating fee category' });
+    console.error("Error creating fee category", error);
+    if (error.code === 11000) {
+      return res.status(400).json({ error: 'A fee category with this name already exists. Please choose a different name.' });
+    }
+    res.status(500).json({ error: error.message || 'Error creating fee category' });
   }
 };
 
 export const updateFeeCategory = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, isEnabled, mandatory } = req.body;
-    const category = await FeeCategory.findByIdAndUpdate(
-      id, 
-      { name, isEnabled, mandatory: mandatory ?? false }, 
-      { new: true }
-    );
-    res.json(category);
+    const { name, isEnabled, mandatory, isStockItem, currentStock, updatedStock } = req.body;
+
+    const existingCat = await FeeCategory.findById(id);
+    if (!existingCat) {
+      return res.status(404).json({ error: 'Fee category not found' });
+    }
+
+    if (name && name.trim()) {
+      const trimmedName = name.trim();
+      if (trimmedName.toLowerCase() !== existingCat.name.toLowerCase()) {
+        const duplicate = await FeeCategory.findOne({
+          _id: { $ne: new mongoose.Types.ObjectId(id) },
+          name: { $regex: new RegExp(`^${trimmedName.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')}$`, 'i') }
+        });
+        if (duplicate) {
+          return res.status(400).json({ error: 'A fee category with this name already exists. Please choose a different name.' });
+        }
+      }
+    }
+
+    let targetStock = existingCat.currentStock || 0;
+    const nextIsStockItem = isStockItem !== undefined ? !!isStockItem : existingCat.isStockItem;
+
+    if (nextIsStockItem) {
+      const stockInput = updatedStock !== undefined ? updatedStock : (currentStock !== undefined ? currentStock : existingCat.currentStock);
+      targetStock = parseInt(stockInput, 10);
+      if (isNaN(targetStock) || targetStock < 0) {
+        return res.status(400).json({ error: 'Stock must be a positive whole number.' });
+      }
+    } else {
+      targetStock = 0;
+    }
+
+    const prevStock = existingCat.currentStock || 0;
+    const stockChanged = nextIsStockItem && targetStock !== prevStock;
+
+    existingCat.name = name !== undefined ? name.trim() : existingCat.name;
+    existingCat.isEnabled = isEnabled !== undefined ? isEnabled : existingCat.isEnabled;
+    existingCat.mandatory = mandatory !== undefined ? mandatory : existingCat.mandatory;
+    existingCat.isStockItem = nextIsStockItem;
+    existingCat.currentStock = targetStock;
+
+    await existingCat.save();
+
+    if (stockChanged) {
+      const diff = targetStock - prevStock;
+      await StockHistory.create({
+        categoryId: existingCat._id,
+        categoryName: existingCat.name,
+        previousStock: prevStock,
+        updatedStock: targetStock,
+        difference: diff,
+        action: 'MANUAL_CORRECTION',
+        updatedBy: req.user?.id
+      });
+    }
+
+    res.json(existingCat);
   } catch (error) {
-    res.status(500).json({ error: 'Error updating fee category' });
+    console.error("Error updating fee category", error);
+    if (error.code === 11000) {
+      return res.status(400).json({ error: 'A fee category with this name already exists. Please choose a different name.' });
+    }
+    res.status(500).json({ error: error.message || 'Error updating fee category' });
   }
 };
 
@@ -91,6 +186,8 @@ export const assignFeeToStudent = async (req, res) => {
     if (!student) {
       return res.status(404).json({ error: 'Student not found' });
     }
+
+    const catDoc = await FeeCategory.findById(feeCategoryId);
 
     const existingFees = await StudentFee.find({ studentId, feeCategoryId, className: student.currentClass });
 
@@ -243,22 +340,20 @@ export const assignBulkFee = async (req, res) => {
           amount = typeof feeConfig === 'number' ? feeConfig : parseFloat(feeConfig?.amount || 0);
         }
 
-        if (existing) {
-          existing.totalAmount = amount;
-          existing.remainingAmount = Math.max(0, amount - existing.paidAmount);
-          if (uniformDetailsToSave) {
-            existing.uniformDetails = uniformDetailsToSave;
+        if (isMandatory) {
+          if (existing) {
+            existing.totalAmount = amount;
+            existing.remainingAmount = Math.max(0, amount - existing.paidAmount);
+            await existing.save();
+          } else if (amount > 0) {
+            await StudentFee.create({
+              studentId,
+              feeCategoryId: catId,
+              totalAmount: amount,
+              remainingAmount: amount,
+              paidAmount: 0
+            });
           }
-          await existing.save();
-        } else if (amount > 0 || cat.name.toLowerCase() === 'uniform') {
-          await StudentFee.create({
-            studentId,
-            feeCategoryId: catId,
-            totalAmount: amount,
-            remainingAmount: amount,
-            paidAmount: 0,
-            uniformDetails: uniformDetailsToSave
-          });
         }
       }
 
