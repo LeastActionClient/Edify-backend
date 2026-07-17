@@ -15,4 +15,7 @@ const studentFeeSchema = new mongoose.Schema({
   isStockDeducted: { type: Boolean, default: false }
 }, { timestamps: true });
 
+studentFeeSchema.index({ studentId: 1, feeCategoryId: 1, className: 1 }, { unique: true });
+
 export default mongoose.model('StudentFee', studentFeeSchema);
+
