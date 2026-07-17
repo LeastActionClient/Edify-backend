@@ -318,11 +318,6 @@ const validateStudentInput = ({ caste, emisNo, emisNumber, guardianName, guardia
     return 'Guardian Name must contain only alphabets and spaces (maximum 100 characters).';
   }
 
-  const waVal = (whatsappNumber || '').trim();
-  if (waVal && !/^\d{10}$/.test(waVal)) {
-    return 'WhatsApp Number must be exactly 10 digits.';
-  }
-
   return null;
 };
 
@@ -515,6 +510,32 @@ export const addStudentManually = async (req, res) => {
   }
 };
 
+const parseExcelDate = (val) => {
+  if (!val) return null;
+  if (val instanceof Date) {
+    return isNaN(val.getTime()) ? null : val;
+  }
+  if (typeof val === 'number') {
+    return new Date((val - 25569) * 86400 * 1000);
+  }
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    const parts = trimmed.split(/[-/]/);
+    if (parts.length === 3) {
+      if (parts[0].length <= 2 && parts[2].length === 4) {
+        const day = parseInt(parts[0], 10);
+        const month = parseInt(parts[1], 10) - 1;
+        const year = parseInt(parts[2], 10);
+        const d = new Date(year, month, day);
+        if (!isNaN(d.getTime())) return d;
+      }
+    }
+    const d = new Date(trimmed);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  return null;
+};
+
 export const bulkImportStudents = async (req, res) => {
   try {
     const { currentClass, section } = req.body;
@@ -533,29 +554,60 @@ export const bulkImportStudents = async (req, res) => {
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
 
-    const data = xlsx.utils.sheet_to_json(sheet);
+    const rawData = xlsx.utils.sheet_to_json(sheet);
 
-    if (data.length === 0) {
+    if (rawData.length === 0) {
       res.status(400).json({ error: 'Excel file is empty' });
       return;
     }
 
     let successCount = 0;
+    let duplicateCount = 0;
+    let validationErrorsCount = 0;
+    let dbErrorsCount = 0;
     const errors = [];
 
-    for (let i = 0; i < data.length; i++) {
-      const row = data[i];
-      const studentName = row['Student Name'] || row['Name'] || row['studentName'];
+    for (let i = 0; i < rawData.length; i++) {
+      const rawRow = rawData[i];
+      // Normalize headers (case-insensitive and trim)
+      const row = {};
+      for (const key of Object.keys(rawRow)) {
+        if (key) {
+          const normalizedKey = String(key).trim().toLowerCase();
+          row[normalizedKey] = rawRow[key];
+        }
+      }
 
-      if (!studentName) {
-        errors.push(`Row ${i + 2}: Student Name is missing.`);
+      // Read exact Admission Number
+      const admissionNumber = String(row['admission number'] || row['admission no'] || '').trim();
+      
+      if (!admissionNumber) {
+        errors.push(`Row ${i + 2}: Admission Number is missing.`);
+        validationErrorsCount++;
         continue;
       }
 
-      const casteVal = String(row['Caste'] || row['caste'] || '').trim();
-      const emisNoVal = String(row['EMIS No'] || row['emisNo'] || row['EMIS Number'] || row['emisNumber'] || row['EMIS'] || row['emis'] || '').trim();
-      const guardianNameVal = String(row['Guardian Name'] || row['guardianName'] || row['Guardian'] || row['guardian'] || '').trim();
-      const whatsappNumberVal = String(row['WhatsApp Number'] || row['whatsappNumber'] || row['WhatsApp No'] || row['whatsappNo'] || '').trim();
+      // Read Student Name
+      const studentName = String(row['student name'] || row['name'] || '').trim();
+
+      if (!studentName) {
+        errors.push(`Row ${i + 2}: Student Name is missing.`);
+        validationErrorsCount++;
+        continue;
+      }
+
+      // Duplicate Check
+      const existingStudent = await Student.findOne({ admissionNumber });
+      if (existingStudent) {
+        errors.push(`Row ${i + 2}: Duplicate Admission Number`);
+        duplicateCount++;
+        continue;
+      }
+
+      const casteVal = String(row['caste'] || '').trim();
+      const emisNoVal = String(row['emis no'] || row['emis number'] || row['emis'] || '').trim();
+      const guardianNameVal = String(row['guardian name'] || row['guardian'] || '').trim();
+      const whatsappNumberVal = String(row['whatsapp number'] || row['whatsapp no'] || '').trim();
 
       const rowValError = validateStudentInput({
         caste: casteVal,
@@ -563,68 +615,67 @@ export const bulkImportStudents = async (req, res) => {
         guardianName: guardianNameVal,
         whatsappNumber: whatsappNumberVal
       });
+      
       if (rowValError) {
         errors.push(`Row ${i + 2}: ${rowValError}`);
+        validationErrorsCount++;
         continue;
       }
 
       try {
-        let studentRecord = null;
+        const studentPayload = {
+          admissionNumber,
+          studentName,
+          fatherName: String(row['father name'] || ''),
+          motherName: String(row['mother name'] || ''),
+          fatherPhone: String(row['father phone'] || row['father mobile'] || row['parent mobile number'] || row['mobile number'] || ''),
+          motherPhone: String(row['mother phone'] || row['mother mobile'] || ''),
+          address: String(row['address'] || ''),
+          gender: String(row['gender'] || row['sex'] || ''),
+          bloodGroup: String(row['blood group'] || ''),
+          aadhaarNumber: String(row['aadhar no'] || row['aadhaar number'] || row['aadhar number'] || ''),
+          religion: String(row['religion'] || ''),
+          community: String(row['community'] || ''),
+          caste: casteVal,
+          RTE: String(row['rte'] || ''),
+          nationality: String(row['nationality'] || ''),
+          fatherOccupation: String(row['father occupation'] || ''),
+          motherOccupation: String(row['mother occupation'] || ''),
+          guardian: guardianNameVal,
+          guardianName: guardianNameVal,
+          city: String(row['city'] || ''),
+          state: String(row['state'] || ''),
+          pincode: String(row['pincode'] || row['pin code'] || row['pin'] || row['postal code'] || ''),
+          dateOfBirth: parseExcelDate(row['date of birth'] || row['dob']),
+          whatsappNumber: whatsappNumberVal,
+          emisNumber: emisNoVal,
+          emisNo: emisNoVal,
+          email: String(row['email'] || ''),
+          rollNumber: String(row['roll number'] || ''),
+          admissionDate: parseExcelDate(row['admission date'] || row['date of admission']),
+          studentStatus: String(row['student status'] || row['status'] || 'Active'),
+          academicYear: String(row['academic year'] || ''),
+          currentClass,
+          section: section || null,
+          addedById: req.user?.id
+        };
 
-        for (let attempt = 1; attempt <= 3; attempt += 1) {
-          try {
-            const result = await createStudentWithGeneratedAdmissionNumber({
-              studentName: String(studentName),
-              fatherName: String(row['Father Name'] || row['fatherName'] || ''),
-              motherName: String(row['Mother Name'] || row['motherName'] || ''),
-              fatherPhone: String(row['Father Phone'] || row['fatherPhone'] || ''),
-              motherPhone: String(row['Mother Phone'] || row['motherPhone'] || ''),
-              address: String(row['Address'] || row['address'] || ''),
-              gender: String(row['Gender'] || row['Sex'] || row['gender'] || ''),
-              bloodGroup: String(row['Blood Group'] || row['bloodGroup'] || ''),
-              aadhaarNumber: String(row['Aadhar No'] || row['Aadhaar Number'] || row['aadhaarNumber'] || ''),
-              religion: String(row['Religion'] || row['religion'] || ''),
-              community: String(row['Community'] || row['community'] || ''),
-              caste: casteVal,
-              RTE: String(row['RTE'] || row['RTE'] || ''),
-              nationality: String(row['Nationality'] || row['nationality'] || ''),
-              fatherOccupation: String(row['Father Occupation'] || row['fatherOccupation'] || ''),
-              motherOccupation: String(row['Mother Occupation'] || row['motherOccupation'] || ''),
-              guardian: guardianNameVal,
-              guardianName: guardianNameVal,
-              city: String(row['City'] || row['city'] || ''),
-              state: String(row['State'] || row['state'] || ''),
-              pincode: String(row['Pincode'] || row['pincode'] || ''),
-              dateOfBirth: (row['Date of Birth'] || row['DOB']) ? new Date(row['Date of Birth'] || row['DOB']) : null,
-              whatsappNumber: whatsappNumberVal,
-              emisNumber: emisNoVal,
-              emisNo: emisNoVal,
-              currentClass,
-              section: section || null,
-              addedById: req.user?.id
-            });
-            studentRecord = result.student;
-            break;
-          } catch (err) {
-            if (isDuplicateAdmissionNumberError(err) && attempt < 3) {
-              continue;
-            }
-            throw err;
-          }
+        const studentRecord = await Student.create(studentPayload);
+
+        try {
+          await assignClassDefaultFeesToStudent(studentRecord);
+        } catch (feeError) {
+          console.warn(`Fee assignment failed for student ${admissionNumber}:`, feeError);
         }
-
-        if (!studentRecord) {
-          errors.push(`Row ${i + 2}: Unable to generate a unique admission number.`);
-          continue;
-        }
-
-        await assignClassDefaultFeesToStudent(studentRecord);
+        
         successCount++;
       } catch (err) {
         if (err.code === 11000) {
-          errors.push(`Row ${i + 2}: Admission number collision while importing student.`);
+          errors.push(`Row ${i + 2}: Duplicate Admission Number`);
+          duplicateCount++;
         } else {
-          errors.push(`Row ${i + 2}: Error saving to DB.`);
+          errors.push(`Row ${i + 2}: Error saving to DB: ${err.message}`);
+          dbErrorsCount++;
         }
       }
     }
@@ -638,8 +689,12 @@ export const bulkImportStudents = async (req, res) => {
     }
 
     res.status(201).json({
-      message: `Successfully imported ${successCount} students.`,
-      errors: errors.length > 0 ? errors : undefined
+      message: 'Import Completed',
+      successCount,
+      duplicateCount,
+      validationErrorsCount,
+      dbErrorsCount,
+      errors
     });
 
   } catch (error) {
