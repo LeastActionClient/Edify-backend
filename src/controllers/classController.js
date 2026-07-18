@@ -119,6 +119,11 @@ export const createSection = async (req, res) => {
     const classId = req.params.classId;
     const { name } = req.body;
 
+    if (name && !/^[a-zA-Z]+$/.test(name)) {
+      res.status(400).json({ error: 'Section can contain only alphabetic characters.' });
+      return;
+    }
+
     const existingClass = await Class.findById(classId);
     if (!existingClass) {
       res.status(404).json({ error: 'Class not found' });
@@ -150,6 +155,11 @@ export const updateSection = async (req, res) => {
   try {
     const { classId, sectionId } = req.params;
     const { name } = req.body;
+
+    if (name && !/^[a-zA-Z]+$/.test(name)) {
+      res.status(400).json({ error: 'Section can contain only alphabetic characters.' });
+      return;
+    }
 
     const existingClass = await Class.findById(classId);
     if (!existingClass) {

@@ -11,6 +11,7 @@ import settingsRoutes from './settingsRoutes.js';
 import includedChargeRoutes from './includedChargeRoutes.js';
 import activityRoutes from './activityRoutes.js';
 import exportRoutes from './exportRoutes.js';
+import academicYearRoutes from './academicYearRoutes.js';
 
 const router = Router();
 
@@ -26,5 +27,7 @@ router.use('/settings', settingsRoutes);
 router.use('/included-charges', includedChargeRoutes);
 router.use('/activities', activityRoutes);
 router.use('/exports', exportRoutes);
+router.use('/academic-years', academicYearRoutes);
+
 
 export default router;

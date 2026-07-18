@@ -156,134 +156,70 @@ export const exportStudents = async (req, res) => {
     if (exportType === 'Excel') {
       const wb = xlsx.utils.book_new();
 
-      const sheets = {
-        'Student Details': [],
-        'Parent Details': [],
-        'Academic History': [],
-        'Fee History': [],
-        'Included Charges': [],
-        'Activities': [],
-        'Payment History': [],
-        'Pending Fees': [],
-        'Exit Details': []
+      const formatDateToYYYYMMDD = (dateVal) => {
+        if (!dateVal) return '';
+        const date = new Date(dateVal);
+        if (isNaN(date.getTime())) return '';
+        return date.toISOString().split('T')[0];
       };
 
-      for (const student of finalStudents) {
-        const baseInfo = { 'Admission Number': student.admissionNumber, 'Student Name': student.studentName };
+      const exportRows = finalStudents.map(student => ({
+        'Student Name': student.studentName || '',
+        'Admission No': student.admissionNumber || '',
+        'EMIS No': student.emisNo || student.emisNumber || '',
+        'DOB': formatDateToYYYYMMDD(student.dateOfBirth),
+        'Gender / Sex': student.gender || '',
+        'Blood Group': student.bloodGroup || '',
+        'Aadhar No': student.aadhaarNumber || '',
+        'Religion': student.religion || '',
+        'Community': student.community || '',
+        'Caste': student.caste || '',
+        'RTE': student.RTE || '',
+        'Nationality': student.nationality || '',
+        'Father Name': student.fatherName || '',
+        'Father Phone': student.fatherPhone || '',
+        'Father Occupation': student.fatherOccupation || '',
+        'Mother Name': student.motherName || '',
+        'Mother Phone': student.motherPhone || '',
+        'Mother Occupation': student.motherOccupation || '',
+        'Guardian Name': student.guardianName || student.guardian || '',
+        'Whatsapp Number': student.whatsappNumber || '',
+        'Address': student.address || '',
+        'City': student.city || '',
+        'State': student.state || '',
+        'Pincode': student.pincode || ''
+      }));
 
-        sheets['Student Details'].push({
-          ...baseInfo,
-          'EMIS No': student.emisNo || student.emisNumber || '',
-          'EMIS Number': student.emisNo || student.emisNumber || '',
-          'DOB': student.dateOfBirth ? new Date(student.dateOfBirth).toLocaleDateString() : '',
-          'Gender': student.gender || '',
-          'Blood Group': student.bloodGroup || '',
-          'Aadhaar Number': student.aadhaarNumber || '',
-          'Religion': student.religion || '',
-          'Community': student.community || '',
-          'Caste': student.caste || '',
-          'Nationality': student.nationality || '',
-          'RCC/RTE': student.RTE || '',
-          'Current Status': student.studentStatus || 'Active'
-        });
+      const ws = xlsx.utils.json_to_sheet(exportRows, {
+        header: [
+          'Student Name',
+          'Admission No',
+          'EMIS No',
+          'DOB',
+          'Gender / Sex',
+          'Blood Group',
+          'Aadhar No',
+          'Religion',
+          'Community',
+          'Caste',
+          'RTE',
+          'Nationality',
+          'Father Name',
+          'Father Phone',
+          'Father Occupation',
+          'Mother Name',
+          'Mother Phone',
+          'Mother Occupation',
+          'Guardian Name',
+          'Whatsapp Number',
+          'Address',
+          'City',
+          'State',
+          'Pincode'
+        ]
+      });
 
-        sheets['Parent Details'].push({
-          ...baseInfo,
-          'Father Name': student.fatherName || '',
-          'Father Occupation': student.fatherOccupation || '',
-          'Father Phone': student.fatherPhone || '',
-          'Mother Name': student.motherName || '',
-          'Mother Occupation': student.motherOccupation || '',
-          'Mother Phone': student.motherPhone || '',
-          'Guardian Name': student.guardianName || student.guardian || '',
-          'WhatsApp Number': student.whatsappNumber || '',
-          'Address': student.address || '',
-          'City': student.city || '',
-          'State': student.state || '',
-          'Pincode': student.pincode || ''
-        });
-
-        sheets['Academic History'].push({
-          ...baseInfo,
-          'EMIS No': student.emisNo || student.emisNumber || '',
-          'Academic Year Joined': student.academicYear || '',
-          'Admission Date': student.admissionDate ? new Date(student.admissionDate).toLocaleDateString() : '',
-          'Current Class': student.currentClass || '',
-          'Section': student.section || '',
-          'Roll Number': student.rollNumber || ''
-        });
-
-        if (student.fees.length > 0) {
-          student.fees.forEach(fee => {
-            sheets['Fee History'].push({
-              ...baseInfo,
-              'Fee Category': fee.feeCategoryId?.name || 'Unknown',
-              'Total Amount': fee.totalAmount,
-              'Paid Amount': fee.paidAmount,
-              'Remaining Amount': fee.remainingAmount,
-              'Academic Year': fee.academicYear || 'Current',
-              'Class': fee.className || 'Current'
-            });
-          });
-        }
-
-        if (student.includedCharges.length > 0) {
-          student.includedCharges.forEach(charge => {
-            sheets['Included Charges'].push({
-              ...baseInfo,
-              'Charge Name': charge.includedChargeId?.name || 'Unknown',
-              'Amount': charge.totalAmount || charge.includedChargeId?.amount || 0,
-              'Status': charge.isPaid ? 'Paid' : 'Pending',
-              'Assigned Date': new Date(charge.createdAt).toLocaleDateString()
-            });
-          });
-        }
-
-        if (student.activities.length > 0) {
-          student.activities.forEach(act => {
-            sheets['Activities'].push({
-              ...baseInfo,
-              'Activity Name': act.activityId?.name || 'Unknown',
-              'Amount': act.totalAmount || act.activityId?.amount || 0,
-              'Status': act.isPaid ? 'Paid' : 'Pending',
-              'Assigned Date': new Date(act.createdAt).toLocaleDateString()
-            });
-          });
-        }
-
-        if (student.payments.length > 0) {
-          student.payments.forEach(pay => {
-            sheets['Payment History'].push({
-              ...baseInfo,
-              'Receipt No': pay.receiptNumber || '',
-              'Amount': pay.amount,
-              'Payment Date': new Date(pay.paymentDate).toLocaleDateString(),
-              'Payment Method': pay.paymentMethod || ''
-            });
-          });
-        }
-
-        sheets['Pending Fees'].push({
-          ...baseInfo,
-          'Total Pending Amount': student.totalPending
-        });
-
-        if (student.studentStatus && student.studentStatus !== 'Active') {
-          sheets['Exit Details'].push({
-            ...baseInfo,
-            'Exit Type': student.studentStatus,
-            'Exit Reason': '',
-            'Exit Date': student.updatedAt ? new Date(student.updatedAt).toLocaleDateString() : ''
-          });
-        }
-      }
-
-      for (const sheetName in sheets) {
-        if (sheets[sheetName].length > 0) {
-          const ws = xlsx.utils.json_to_sheet(sheets[sheetName]);
-          xlsx.utils.book_append_sheet(wb, ws, sheetName.substring(0, 31)); // Excel max sheet name length is 31
-        }
-      }
+      xlsx.utils.book_append_sheet(wb, ws, 'Students');
 
       const buffer = xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
       res.setHeader('Content-Disposition', 'attachment; filename="student_export.xlsx"');

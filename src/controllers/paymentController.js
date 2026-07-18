@@ -85,6 +85,19 @@ const buildReceiptEntry = (source, fallbackAmount = 0) => {
 };
 
 const groupFeeAllocationsForReceipt = (payment) => {
+  if (payment?.paymentType === 'APPLICATION') {
+    return [{
+      name: 'Application Fee',
+      displayName: 'Application Fee',
+      terms: [],
+      totalAmount: payment.amount,
+      discountAmount: 0,
+      paidAmount: payment.amount,
+      balanceAmount: 0,
+      rows: []
+    }];
+  }
+
   const feeAllocations = Array.isArray(payment?.feeAllocations) ? payment.feeAllocations : [];
   const studentFee = payment?.studentFee || payment?.studentFeeId || null;
 
@@ -198,6 +211,7 @@ const drawReceiptCopy = ({
   const rowHeight = mmToPt(4.2);
 
   const student = payment.studentId || payment.student || {};
+  const application = payment.applicationId || payment.application || {};
   const receiptNumber = invoice?.invoiceNumber || payment._id?.toString?.() || '-';
   const receiptDate = formatReceiptDate(payment.paymentDate);
 
@@ -243,13 +257,23 @@ const drawReceiptCopy = ({
   const lineGap = mmToPt(4.2);
 
   doc.fillColor('#0F172A').font('Helvetica').fontSize(8.2);
-  doc.text(`Admission No: ${student.admissionNumber || '-'}`, leftColX, detailTop, { width: innerWidth / 2 - mmToPt(2) });
-  doc.text(`Receipt No: ${receiptNumber}`, leftColX, detailTop + lineGap, { width: innerWidth / 2 - mmToPt(2) });
-  doc.text(`Student Name: ${student.studentName || '-'}`, leftColX, detailTop + lineGap * 2, { width: innerWidth / 2 - mmToPt(2) });
+  if (payment.paymentType === 'APPLICATION') {
+    doc.text(`Application No: ${application.applicationId || '-'}`, leftColX, detailTop, { width: innerWidth / 2 - mmToPt(2) });
+    doc.text(`Receipt No: ${receiptNumber}`, leftColX, detailTop + lineGap, { width: innerWidth / 2 - mmToPt(2) });
+    doc.text(`Applicant Name: ${application.studentName || '-'}`, leftColX, detailTop + lineGap * 2, { width: innerWidth / 2 - mmToPt(2) });
 
-  doc.text(`Class & Section: ${student.currentClass || '-'} ${student.section || ''}`, rightColX, detailTop, { width: innerWidth / 2 - mmToPt(2), align: 'right' });
-  doc.text(`Date: ${receiptDate}`, rightColX, detailTop + lineGap, { width: innerWidth / 2 - mmToPt(2), align: 'right' });
-  doc.text(`Payment Mode: ${payment.paymentMethod || '-'}`, rightColX, detailTop + lineGap * 2, { width: innerWidth / 2 - mmToPt(2), align: 'right' });
+    doc.text(`Applying Class: ${application.applyingClass || '-'}`, rightColX, detailTop, { width: innerWidth / 2 - mmToPt(2), align: 'right' });
+    doc.text(`Date: ${receiptDate}`, rightColX, detailTop + lineGap, { width: innerWidth / 2 - mmToPt(2), align: 'right' });
+    doc.text(`Payment Mode: ${payment.paymentMethod || '-'}`, rightColX, detailTop + lineGap * 2, { width: innerWidth / 2 - mmToPt(2), align: 'right' });
+  } else {
+    doc.text(`Admission No: ${student.admissionNumber || '-'}`, leftColX, detailTop, { width: innerWidth / 2 - mmToPt(2) });
+    doc.text(`Receipt No: ${receiptNumber}`, leftColX, detailTop + lineGap, { width: innerWidth / 2 - mmToPt(2) });
+    doc.text(`Student Name: ${student.studentName || '-'}`, leftColX, detailTop + lineGap * 2, { width: innerWidth / 2 - mmToPt(2) });
+
+    doc.text(`Class & Section: ${student.currentClass || '-'} ${student.section || ''}`, rightColX, detailTop, { width: innerWidth / 2 - mmToPt(2), align: 'right' });
+    doc.text(`Date: ${receiptDate}`, rightColX, detailTop + lineGap, { width: innerWidth / 2 - mmToPt(2), align: 'right' });
+    doc.text(`Payment Mode: ${payment.paymentMethod || '-'}`, rightColX, detailTop + lineGap * 2, { width: innerWidth / 2 - mmToPt(2), align: 'right' });
+  }
 
   const tableTop = detailTop + lineGap * 3 + mmToPt(1.8);
   const tableHeaderHeight = mmToPt(4.8);
@@ -324,23 +348,40 @@ const drawReceiptCopy = ({
 const getInvoicePaymentData = async (id) => {
   const paymentDoc = await Payment.findById(id)
     .populate('studentId')
+    .populate('applicationId')
     .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId' } })
     .populate({ path: 'feeAllocations.studentFeeId', populate: { path: 'feeCategoryId' } })
     .populate('recordedById', 'username');
 
-  const invoiceDoc = await Invoice.findOne({ paymentId: id });
+  if (!paymentDoc) {
+    return null;
+  }
 
-  if (!paymentDoc || !invoiceDoc) {
+  let invoiceDoc = await Invoice.findOne({ paymentId: id });
+
+  if (!invoiceDoc && paymentDoc.paymentType === 'APPLICATION') {
+    invoiceDoc = {
+      invoiceNumber: `INV-APP-${paymentDoc.applicationId?.applicationId || paymentDoc._id.toString().slice(-5).toUpperCase()}`,
+      paymentId: paymentDoc._id,
+      generatedDate: paymentDoc.paymentDate || paymentDoc.createdAt
+    };
+  }
+
+  if (!invoiceDoc) {
     return null;
   }
 
   const payment = paymentDoc.toObject();
-  const invoice = invoiceDoc.toObject();
+  const invoice = typeof invoiceDoc.toObject === 'function' ? invoiceDoc.toObject() : invoiceDoc;
 
   payment.invoice = invoice;
 
   if (payment.studentId) {
     payment.student = payment.studentId;
+  }
+
+  if (payment.applicationId) {
+    payment.application = payment.applicationId;
   }
 
   if (payment.studentFeeId) {

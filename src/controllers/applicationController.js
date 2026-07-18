@@ -178,50 +178,89 @@ export const getApplicationById = async (req, res) => {
   }
 };
 
+const validateAdmissionNumber = (admissionNumber) => {
+  const admNum = (admissionNumber || '').trim();
+  if (!admNum) {
+    return 'Admission Number is required.';
+  }
+  if (admNum.length < 3 || admNum.length > 30) {
+    return 'Admission Number must be between 3 and 30 characters.';
+  }
+  if (!/^[a-zA-Z0-9\-/]+$/.test(admNum)) {
+    return 'Admission Number must contain only letters, numbers, hyphens (-), and forward slashes (/).';
+  }
+  return null;
+};
+
 export const approveApplication = async (req, res) => {
   const { id } = req.params;
-  const { section } = req.body;
-  const maxAttempts = 3;
+  const { section, admissionNumber } = req.body;
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const session = await mongoose.startSession();
+  const session = await mongoose.startSession();
 
-    try {
-      session.startTransaction();
+  try {
+    session.startTransaction();
 
-      const application = await Application.findById(id).session(session);
-      if (!application) {
-        await session.abortTransaction();
-        res.status(404).json({ error: 'Application not found' });
-        return;
-      }
+    const application = await Application.findById(id).session(session);
+    if (!application) {
+      await session.abortTransaction();
+      res.status(404).json({ error: 'Application not found' });
+      return;
+    }
 
-      if (application.status === 'APPROVED') {
-        await session.abortTransaction();
-        res.status(400).json({ error: 'Application already approved' });
-        return;
-      }
+    if (application.status === 'APPROVED') {
+      await session.abortTransaction();
+      res.status(400).json({ error: 'Application already approved' });
+      return;
+    }
 
-      if (!section) {
-        await session.abortTransaction();
-        res.status(400).json({ error: 'Section must be assigned upon approval' });
-        return;
-      }
+    if (!section) {
+      await session.abortTransaction();
+      res.status(400).json({ error: 'Section must be assigned upon approval' });
+      return;
+    }
 
-      const { student: newStudent, admissionNumber } = await createStudentWithGeneratedAdmissionNumber({
-        applicationId: application._id,
-        studentName: application.studentName,
-        guardian: application.parentName,
-        fatherName: application.fatherName,
-        motherName: application.motherName,
-        fatherPhone: application.fatherPhone,
-        motherPhone: application.motherPhone,
-        address: application.address,
-        currentClass: application.applyingClass,
-        section,
-        siblings: application.siblings || null,
-        addedById: req.user.id
-      }, { session });
+    if (!admissionNumber) {
+      await session.abortTransaction();
+      res.status(400).json({ error: 'Admission Number is required for approval' });
+      return;
+    }
+
+    const admErr = validateAdmissionNumber(admissionNumber);
+    if (admErr) {
+      await session.abortTransaction();
+      res.status(400).json({ error: admErr });
+      return;
+    }
+
+    const existingStudent = await Student.findOne({ 
+      admissionNumber: { $regex: new RegExp(`^${admissionNumber.trim()}$`, 'i') } 
+    }).session(session);
+    if (existingStudent) {
+      await session.abortTransaction();
+      res.status(400).json({ error: 'Admission Number already exists. Please enter another Admission Number.' });
+      return;
+    }
+
+    const studentPayload = {
+      admissionNumber: admissionNumber.trim(),
+      applicationId: application._id,
+      studentName: application.studentName,
+      guardian: application.parentName,
+      guardianName: application.parentName,
+      fatherName: application.fatherName,
+      motherName: application.motherName,
+      fatherPhone: application.fatherPhone,
+      motherPhone: application.motherPhone,
+      address: application.address,
+      currentClass: application.applyingClass,
+      section,
+      siblings: application.siblings || null,
+      addedById: req.user.id
+    };
+
+    const createdStudents = await Student.create([studentPayload], { session });
+    const newStudent = createdStudents[0];
 
       const classData = await Class.findOne({ name: application.applyingClass }).session(session);
 
@@ -280,22 +319,12 @@ export const approveApplication = async (req, res) => {
       return;
     } catch (error) {
       await session.abortTransaction();
-      if ((isDuplicateAdmissionNumberError(error) || isDuplicateApplicationNumberError(error)) && attempt < maxAttempts) {
-        continue;
-      }
-      const conflict = getDuplicateConflict(error);
-      if (conflict) {
-        console.warn('Duplicate admission number detected:', error?.message || error);
-        res.status(conflict.status).json({ error: conflict.error });
-        return;
-      }
       console.error('Error approving application', error);
-      res.status(500).json({ error: 'Error approving application' });
+      res.status(500).json({ error: error.message || 'Error approving application' });
       return;
     } finally {
       session.endSession();
     }
-  }
 };
 
 export const deleteApplication = async (req, res) => {

@@ -15,7 +15,9 @@ import {
   IncludedCharge,
   IncludedChargeStockTransaction,
   Activity,
-  StockHistory
+  StockHistory,
+  AcademicYear,
+  StudentEnrollment
 } from '../models/index.js';
 import { createStudentWithGeneratedAdmissionNumber } from '../services/studentAdmissionService.js';
 import { isDuplicateAdmissionNumberError } from '../services/admissionNumberService.js';
@@ -302,29 +304,138 @@ const getClassDefaultFees = async (currentClass, section) => {
   return defaultFees;
 };
 
-const validateStudentInput = ({ caste, emisNo, emisNumber, guardianName, guardian, whatsappNumber }) => {
-  const casteVal = (caste || '').trim();
-  if (casteVal && (!/^[a-zA-Z\s]+$/.test(casteVal) || casteVal.length > 50)) {
-    return 'Caste must contain only alphabets and spaces (maximum 50 characters).';
+const validateStudentInput = (data) => {
+  const {
+    fatherName,
+    motherName,
+    guardianName,
+    guardian,
+    fatherPhone,
+    motherPhone,
+    whatsappNumber,
+    fatherOccupation,
+    motherOccupation,
+    caste,
+    emisNo,
+    emisNumber
+  } = data;
+
+  // Father Name Validation (Optional)
+  const fName = (fatherName || '').trim();
+  if (fName) {
+    if (!/^[a-zA-Z\s.]+$/.test(fName)) {
+      return 'Father Name must contain only alphabets, spaces, and dots.';
+    }
+    if (fName.length < 3 || fName.length > 100) {
+      return 'Father Name must be between 3 and 100 characters.';
+    }
   }
 
+  // Mother Name Validation (Optional)
+  const mName = (motherName || '').trim();
+  if (mName) {
+    if (!/^[a-zA-Z\s.]+$/.test(mName)) {
+      return 'Mother Name must contain only alphabets, spaces, and dots.';
+    }
+    if (mName.length < 3 || mName.length > 100) {
+      return 'Mother Name must be between 3 and 100 characters.';
+    }
+  }
+
+  // Guardian Name Validation (Optional)
+  const gName = (guardianName || guardian || '').trim();
+  if (gName) {
+    if (!/^[a-zA-Z\s.]+$/.test(gName)) {
+      return 'Guardian Name must contain only alphabets, spaces, and dots.';
+    }
+    if (gName.length < 3 || gName.length > 100) {
+      return 'Guardian Name must be between 3 and 100 characters.';
+    }
+  }
+
+  // Father Phone Validation (Optional)
+  const fPhone = (fatherPhone || '').trim();
+  if (fPhone) {
+    if (!/^[5-9]\d{9}$/.test(fPhone)) {
+      return 'Father Phone must be exactly 10 digits and start with 5, 6, 7, 8, or 9.';
+    }
+  }
+
+  // Mother Phone Validation (Optional)
+  const mPhone = (motherPhone || '').trim();
+  if (mPhone) {
+    if (!/^[5-9]\d{9}$/.test(mPhone)) {
+      return 'Mother Phone must be exactly 10 digits and start with 5, 6, 7, 8, or 9.';
+    }
+  }
+
+  // WhatsApp Number Validation (Optional)
+  const wPhone = (whatsappNumber || '').trim();
+  if (wPhone) {
+    if (!/^[5-9]\d{9}$/.test(wPhone)) {
+      return 'WhatsApp Number must be exactly 10 digits and start with 5, 6, 7, 8, or 9.';
+    }
+  }
+
+  // Father Occupation Validation (Optional)
+  const fOcc = (fatherOccupation || '').trim();
+  if (fOcc) {
+    if (!/^[a-zA-Z\s]+$/.test(fOcc)) {
+      return 'Father Occupation must contain only alphabets and spaces.';
+    }
+    if (fOcc.length > 100) {
+      return 'Father Occupation must not exceed 100 characters.';
+    }
+  }
+
+  // Mother Occupation Validation (Optional)
+  const mOcc = (motherOccupation || '').trim();
+  if (mOcc) {
+    if (!/^[a-zA-Z\s]+$/.test(mOcc)) {
+      return 'Mother Occupation must contain only alphabets and spaces.';
+    }
+    if (mOcc.length > 100) {
+      return 'Mother Occupation must not exceed 100 characters.';
+    }
+  }
+
+  // Caste Validation (Optional)
+  const casteVal = (caste || '').trim();
+  if (casteVal) {
+    if (!/^[a-zA-Z\s]+$/.test(casteVal)) {
+      return 'Caste must contain only alphabets and spaces.';
+    }
+    if (casteVal.length > 50) {
+      return 'Caste must not exceed 50 characters.';
+    }
+  }
+
+  // EMIS No Validation (Optional)
   const emisVal = (emisNo || emisNumber || '').trim();
   if (emisVal && !/^\d{10}$/.test(emisVal)) {
     return 'EMIS No must be exactly 10 digits.';
   }
 
-  const guardianVal = (guardianName || guardian || '').trim();
-  if (guardianVal && (!/^[a-zA-Z\s]+$/.test(guardianVal) || guardianVal.length > 100)) {
-    return 'Guardian Name must contain only alphabets and spaces (maximum 100 characters).';
-  }
+  return null;
+};
 
+const validateAdmissionNumber = (admissionNumber) => {
+  const admNum = (admissionNumber || '').trim();
+  if (!admNum) {
+    return 'Admission Number is required.';
+  }
+  if (admNum.length < 3 || admNum.length > 30) {
+    return 'Admission Number must be between 3 and 30 characters.';
+  }
+  if (!/^[a-zA-Z0-9\-/]+$/.test(admNum)) {
+    return 'Admission Number must contain only letters, numbers, hyphens (-), and forward slashes (/).';
+  }
   return null;
 };
 
 export const addStudentManually = async (req, res) => {
-  const maxAttempts = 3;
-
   const {
+    admissionNumber,
     studentName, fatherName, motherName, fatherPhone, motherPhone, address,
     currentClass, section,
     dateOfBirth, gender, bloodGroup, aadhaarNumber, religion, community, caste, RTE, nationality,
@@ -333,205 +444,279 @@ export const addStudentManually = async (req, res) => {
     applicationId, includedChargesIds = [], activitiesIds = []
   } = req.body;
 
-  if (!studentName || !currentClass) {
-    res.status(400).json({ error: 'Student Name and Class are required' });
+  if (!admissionNumber || !studentName || !currentClass) {
+    res.status(400).json({ error: 'Admission Number, Student Name and Class are required' });
     return;
   }
 
-  const valError = validateStudentInput({ caste, emisNo, emisNumber, guardianName, guardian, whatsappNumber });
+  if (section && !/^[a-zA-Z]+$/.test(section.trim())) {
+    res.status(400).json({ error: 'Section can contain only alphabetic characters.' });
+    return;
+  }
+
+  const admErr = validateAdmissionNumber(admissionNumber);
+  if (admErr) {
+    res.status(400).json({ error: admErr });
+    return;
+  }
+
+  const existingStudent = await Student.findOne({ 
+    admissionNumber: { $regex: new RegExp(`^${admissionNumber.trim()}$`, 'i') } 
+  });
+  if (existingStudent) {
+    res.status(400).json({ error: 'Admission Number already exists. Please enter another Admission Number.' });
+    return;
+  }
+
+  const valError = validateStudentInput({
+    fatherName,
+    motherName,
+    fatherPhone,
+    motherPhone,
+    fatherOccupation,
+    motherOccupation,
+    guardianName,
+    guardian,
+    whatsappNumber,
+    caste,
+    emisNo,
+    emisNumber
+  });
   if (valError) {
     res.status(400).json({ error: valError });
     return;
   }
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const session = await mongoose.startSession();
+  const session = await mongoose.startSession();
 
-    try {
-      session.startTransaction();
+  try {
+    session.startTransaction();
 
-      let application = null;
-      if (applicationId) {
-        application = await Application.findById(applicationId).session(session);
-        if (!application) {
-          throw new Error('Application not found');
-        }
-        if (application.status === 'APPROVED') {
-          throw new Error('This application has already been approved and linked to a student.');
-        }
-        const normalize = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
-        if (normalize(application.applyingClass) !== normalize(currentClass)) {
-          throw new Error('Application class does not match selected class.');
-        }
-      }
-
-      const studentPayload = {
-        studentName,
-        fatherName: fatherName || '',
-        motherName: motherName || '',
-        fatherPhone: fatherPhone || '',
-        motherPhone: motherPhone || '',
-        address: address || '',
-        dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
-        gender: gender || '',
-        bloodGroup: bloodGroup || '',
-        aadhaarNumber: aadhaarNumber || '',
-        religion: religion || '',
-        community: community || '',
-        caste: (caste || '').trim(),
-        RTE: RTE || '',
-        nationality: nationality || '',
-        fatherOccupation: fatherOccupation || '',
-        motherOccupation: motherOccupation || '',
-        guardian: (guardianName || guardian || '').trim(),
-        guardianName: (guardianName || guardian || '').trim(),
-        city: city || '',
-        state: state || '',
-        pincode: pincode || '',
-        whatsappNumber: (whatsappNumber || '').trim(),
-        emisNumber: (emisNo || emisNumber || '').trim(),
-        emisNo: (emisNo || emisNumber || '').trim(),
-        currentClass,
-        section,
-        addedById: req.user?.id,
-        applicationId: applicationId || null
-      };
-
-      const { student, admissionNumber } = await createStudentWithGeneratedAdmissionNumber(studentPayload, { session });
-
-      const selectedIncludedChargeIds = [...new Set(includedChargesIds.map(id => id?.toString()).filter(Boolean))];
-      const selectedActivityIds = [...new Set(activitiesIds.map(id => id?.toString()).filter(Boolean))];
-
-      if (selectedIncludedChargeIds.length > 0) {
-        const charges = await IncludedCharge.find({ _id: { $in: selectedIncludedChargeIds } }).session(session);
-        const chargeMap = new Map(charges.map(charge => [charge._id.toString(), charge]));
-
-        for (const chargeId of selectedIncludedChargeIds) {
-          const charge = chargeMap.get(chargeId);
-          if (!charge) {
-            throw new Error('One of the included charges was not found');
-          }
-          if (clampNonNegative(charge.stockQuantity) <= 0) {
-            throw new Error(`Not enough stock for ${charge.name}`);
-          }
-        }
-
-        await StudentIncludedCharge.insertMany(
-          selectedIncludedChargeIds.map(chargeId => ({
-            studentId: student._id,
-            includedChargeId: chargeId
-          })),
-          { session }
-        );
-
-        for (const chargeId of selectedIncludedChargeIds) {
-          await adjustIncludedChargeStock(chargeId, -1, {
-            session,
-            performedById: req.user?.id,
-            reason: `Assigned to student ${admissionNumber}`,
-            referenceType: 'Student',
-            referenceId: student._id
-          });
-        }
-      }
-
-      if (selectedActivityIds.length > 0) {
-        const activities = await Activity.find({ _id: { $in: selectedActivityIds } }).session(session);
-        const activityIdsFound = new Set(activities.map(activity => activity._id.toString()));
-        const missingActivityId = selectedActivityIds.find(activityId => !activityIdsFound.has(activityId));
-        if (missingActivityId) {
-          throw new Error('One of the activities was not found');
-        }
-
-        await StudentActivity.insertMany(
-          selectedActivityIds.map(activityId => ({
-            studentId: student._id,
-            activityId
-          })),
-          { session }
-        );
-      }
-
-      const baseFeeTotal = await assignClassDefaultFeesToStudent(student, session);
-      const selectedIncludedCharges = selectedIncludedChargeIds.length > 0
-        ? await IncludedCharge.find({ _id: { $in: selectedIncludedChargeIds } }).session(session)
-        : [];
-      const selectedActivities = selectedActivityIds.length > 0
-        ? await Activity.find({ _id: { $in: selectedActivityIds } }).session(session)
-        : [];
-      const includedChargesTotal = selectedIncludedCharges.reduce((sum, charge) => sum + (Number(charge.amount) || 0), 0);
-      const activitiesTotal = selectedActivities.reduce((sum, activity) => sum + (Number(activity.amount) || 0), 0);
-
-      await Student.findByIdAndUpdate(student._id, {
-        includedChargesTotal,
-        activitiesTotal,
-        grandTotal: baseFeeTotal + includedChargesTotal + activitiesTotal
-      }, { session });
-
-      if (application) {
-        application.status = 'APPROVED';
-        application.approvedBy = req.user?.id;
-        application.approvedAt = new Date();
-        application.adminNo = admissionNumber;
-        application.student = student._id;
-        await application.save({ session });
-      }
-
-      if (req.user) {
-        await ActivityLog.create([{
-          userId: req.user.id,
-          action: applicationId ? 'APPROVED_APPLICATION' : 'CREATED_STUDENT_MANUALLY',
-          details: applicationId
-            ? `Application ${application.applicationId} approved. Student ${admissionNumber} created.`
-            : `Student ${admissionNumber} created manually for class ${currentClass}`
-        }], { session });
-      }
-
-      await session.commitTransaction();
-
-      res.status(201).json({
-        success: true,
-        message: 'Student created successfully',
-        admissionNumber,
-        data: student
-      });
-      return;
-    } catch (error) {
-      await session.abortTransaction();
-      if (isDuplicateAdmissionNumberError(error) && attempt < maxAttempts) {
-        continue;
-      }
-      console.error("Manual add error:", error);
-      res.status(500).json({ error: error.message || 'Error adding student manually' });
-      return;
-    } finally {
-      session.endSession();
+    const activeYear = await AcademicYear.findOne({ status: 'Active' }).session(session);
+    if (!activeYear) {
+      throw new Error('No active academic year found in the system. Please create and activate an academic year first.');
     }
+
+    let application = null;
+    if (applicationId) {
+      application = await Application.findById(applicationId).session(session);
+      if (!application) {
+        throw new Error('Application not found');
+      }
+      if (application.status === 'APPROVED') {
+        throw new Error('This application has already been approved and linked to a student.');
+      }
+      const normalize = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (normalize(application.applyingClass) !== normalize(currentClass)) {
+        throw new Error('Application class does not match selected class.');
+      }
+    }
+
+    const studentPayload = {
+      admissionNumber: admissionNumber.trim(),
+      studentName,
+      fatherName: fatherName || '',
+      motherName: motherName || '',
+      fatherPhone: fatherPhone || '',
+      motherPhone: motherPhone || '',
+      address: address || '',
+      dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
+      gender: gender || '',
+      bloodGroup: bloodGroup || '',
+      aadhaarNumber: aadhaarNumber || '',
+      religion: religion || '',
+      community: community || '',
+      caste: (caste || '').trim(),
+      RTE: RTE || '',
+      nationality: nationality || '',
+      fatherOccupation: fatherOccupation || '',
+      motherOccupation: motherOccupation || '',
+      guardian: (guardianName || guardian || '').trim(),
+      guardianName: (guardianName || guardian || '').trim(),
+      city: city || '',
+      state: state || '',
+      pincode: pincode || '',
+      whatsappNumber: (whatsappNumber || '').trim(),
+      emisNumber: (emisNo || emisNumber || '').trim(),
+      emisNo: (emisNo || emisNumber || '').trim(),
+      currentClass,
+      section,
+      addedById: req.user?.id,
+      applicationId: applicationId || undefined,
+      academicYear: activeYear.year
+    };
+
+    const createdStudents = await Student.create([studentPayload], { session });
+    const student = createdStudents[0];
+
+    await StudentEnrollment.create([{
+      studentId: student._id,
+      academicYearId: activeYear._id,
+      academicYear: activeYear.year,
+      className: currentClass,
+      sectionName: section || '',
+      status: 'Active',
+      joinedDate: new Date()
+    }], { session });
+
+    const selectedIncludedChargeIds = [...new Set(includedChargesIds.map(id => id?.toString()).filter(Boolean))];
+    const selectedActivityIds = [...new Set(activitiesIds.map(id => id?.toString()).filter(Boolean))];
+
+    if (selectedIncludedChargeIds.length > 0) {
+      const charges = await IncludedCharge.find({ _id: { $in: selectedIncludedChargeIds } }).session(session);
+      const chargeMap = new Map(charges.map(charge => [charge._id.toString(), charge]));
+
+      for (const chargeId of selectedIncludedChargeIds) {
+        const charge = chargeMap.get(chargeId);
+        if (!charge) {
+          throw new Error('One of the included charges was not found');
+        }
+        if (clampNonNegative(charge.stockQuantity) <= 0) {
+          throw new Error(`Not enough stock for ${charge.name}`);
+        }
+      }
+
+      await StudentIncludedCharge.insertMany(
+        selectedIncludedChargeIds.map(chargeId => ({
+          studentId: student._id,
+          includedChargeId: chargeId
+        })),
+        { session }
+      );
+
+      for (const chargeId of selectedIncludedChargeIds) {
+        await adjustIncludedChargeStock(chargeId, -1, {
+          session,
+          performedById: req.user?.id,
+          reason: `Assigned to student ${admissionNumber}`,
+          referenceType: 'Student',
+          referenceId: student._id
+        });
+      }
+    }
+
+    if (selectedActivityIds.length > 0) {
+      const activities = await Activity.find({ _id: { $in: selectedActivityIds } }).session(session);
+      const activityIdsFound = new Set(activities.map(activity => activity._id.toString()));
+      const missingActivityId = selectedActivityIds.find(activityId => !activityIdsFound.has(activityId));
+      if (missingActivityId) {
+        throw new Error('One of the activities was not found');
+      }
+
+      await StudentActivity.insertMany(
+        selectedActivityIds.map(activityId => ({
+          studentId: student._id,
+          activityId
+        })),
+        { session }
+      );
+    }
+
+    const baseFeeTotal = await assignClassDefaultFeesToStudent(student, session);
+    const selectedIncludedCharges = selectedIncludedChargeIds.length > 0
+      ? await IncludedCharge.find({ _id: { $in: selectedIncludedChargeIds } }).session(session)
+      : [];
+    const selectedActivities = selectedActivityIds.length > 0
+      ? await Activity.find({ _id: { $in: selectedActivityIds } }).session(session)
+      : [];
+    const includedChargesTotal = selectedIncludedCharges.reduce((sum, charge) => sum + (Number(charge.amount) || 0), 0);
+    const activitiesTotal = selectedActivities.reduce((sum, activity) => sum + (Number(activity.amount) || 0), 0);
+
+    await Student.findByIdAndUpdate(student._id, {
+      includedChargesTotal,
+      activitiesTotal,
+      grandTotal: baseFeeTotal + includedChargesTotal + activitiesTotal
+    }, { session });
+
+    if (application) {
+      application.status = 'APPROVED';
+      application.approvedBy = req.user?.id;
+      application.approvedAt = new Date();
+      application.adminNo = admissionNumber;
+      application.student = student._id;
+      await application.save({ session });
+    }
+
+    if (req.user) {
+      await ActivityLog.create([{
+        userId: req.user.id,
+        action: applicationId ? 'APPROVED_APPLICATION' : 'CREATED_STUDENT_MANUALLY',
+        details: applicationId
+          ? `Application ${application.applicationId} approved. Student ${admissionNumber} created.`
+          : `Student ${admissionNumber} created manually for class ${currentClass}`
+      }], { session });
+    }
+
+    await session.commitTransaction();
+
+    res.status(201).json({
+      success: true,
+      message: 'Student created successfully',
+      admissionNumber,
+      data: student
+    });
+    return;
+  } catch (error) {
+    await session.abortTransaction();
+    console.error("Manual add error:", error);
+    res.status(500).json({ error: error.message || 'Error adding student manually' });
+    return;
+  } finally {
+    session.endSession();
   }
 };
 
 const parseExcelDate = (val) => {
   if (!val) return null;
+  
   if (val instanceof Date) {
-    return isNaN(val.getTime()) ? null : val;
+    if (isNaN(val.getTime())) return null;
+    return new Date(Date.UTC(val.getFullYear(), val.getMonth(), val.getDate()));
   }
+
   if (typeof val === 'number') {
-    return new Date((val - 25569) * 86400 * 1000);
+    const d = new Date((val - 25569) * 86400 * 1000);
+    if (!isNaN(d.getTime())) {
+      return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+    }
+    return null;
   }
+
   if (typeof val === 'string') {
     const trimmed = val.trim();
-    const parts = trimmed.split(/[-/]/);
-    if (parts.length === 3) {
-      if (parts[0].length <= 2 && parts[2].length === 4) {
-        const day = parseInt(parts[0], 10);
-        const month = parseInt(parts[1], 10) - 1;
-        const year = parseInt(parts[2], 10);
-        const d = new Date(year, month, day);
-        if (!isNaN(d.getTime())) return d;
-      }
+    if (!trimmed) return null;
+
+    let match = trimmed.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+    if (match) {
+      const year = parseInt(match[1], 10);
+      const month = parseInt(match[2], 10) - 1;
+      const day = parseInt(match[3], 10);
+      return new Date(Date.UTC(year, month, day));
     }
+
+    match = trimmed.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+    if (match) {
+      const p1 = parseInt(match[1], 10);
+      const p2 = parseInt(match[2], 10);
+      const year = parseInt(match[3], 10);
+      let day, month;
+      if (p1 > 12) {
+        day = p1;
+        month = p2 - 1;
+      } else if (p2 > 12) {
+        day = p2;
+        month = p1 - 1;
+      } else {
+        day = p1;
+        month = p2 - 1;
+      }
+      return new Date(Date.UTC(year, month, day));
+    }
+
     const d = new Date(trimmed);
-    return isNaN(d.getTime()) ? null : d;
+    if (!isNaN(d.getTime())) {
+      return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+    }
   }
   return null;
 };
@@ -540,8 +725,14 @@ export const bulkImportStudents = async (req, res) => {
   try {
     const { currentClass, section } = req.body;
 
-    if (!currentClass) {
-      res.status(400).json({ error: 'Class is required for bulk import' });
+    if (section && !/^[a-zA-Z]+$/.test(section.trim())) {
+      res.status(400).json({ error: 'Section can contain only alphabetic characters.' });
+      return;
+    }
+
+    const activeYear = await AcademicYear.findOne({ status: 'Active' });
+    if (!activeYear) {
+      res.status(400).json({ error: 'No active academic year found. Please create and activate an academic year first.' });
       return;
     }
 
@@ -567,6 +758,8 @@ export const bulkImportStudents = async (req, res) => {
     let dbErrorsCount = 0;
     const errors = [];
 
+    const batchAdmissionNumbers = new Set();
+
     for (let i = 0; i < rawData.length; i++) {
       const rawRow = rawData[i];
       // Normalize headers (case-insensitive and trim)
@@ -587,19 +780,26 @@ export const bulkImportStudents = async (req, res) => {
         continue;
       }
 
-      // Read Student Name
-      const studentName = String(row['student name'] || row['name'] || '').trim();
-
-      if (!studentName) {
-        errors.push(`Row ${i + 2}: Student Name is missing.`);
+      const admErr = validateAdmissionNumber(admissionNumber);
+      if (admErr) {
+        errors.push(`Row ${i + 2}: ${admErr}`);
         validationErrorsCount++;
         continue;
       }
 
+      if (batchAdmissionNumbers.has(admissionNumber.toLowerCase())) {
+        errors.push(`Row ${i + 2}: Duplicate Admission Number "${admissionNumber}" inside Excel file.`);
+        duplicateCount++;
+        continue;
+      }
+      batchAdmissionNumbers.add(admissionNumber.toLowerCase());
+
       // Duplicate Check
-      const existingStudent = await Student.findOne({ admissionNumber });
+      const existingStudent = await Student.findOne({ 
+        admissionNumber: { $regex: new RegExp(`^${admissionNumber.trim()}$`, 'i') } 
+      });
       if (existingStudent) {
-        errors.push(`Row ${i + 2}: Duplicate Admission Number`);
+        errors.push(`Row ${i + 2}: Duplicate Admission Number "${admissionNumber}" already exists in database.`);
         duplicateCount++;
         continue;
       }
@@ -610,10 +810,18 @@ export const bulkImportStudents = async (req, res) => {
       const whatsappNumberVal = String(row['whatsapp number'] || row['whatsapp no'] || '').trim();
 
       const rowValError = validateStudentInput({
+        fatherName: String(row['father name'] || ''),
+        motherName: String(row['mother name'] || ''),
+        fatherPhone: String(row['father phone'] || row['father mobile'] || row['parent mobile number'] || row['mobile number'] || ''),
+        motherPhone: String(row['mother phone'] || row['mother mobile'] || ''),
+        fatherOccupation: String(row['father occupation'] || ''),
+        motherOccupation: String(row['mother occupation'] || ''),
+        guardianName: guardianNameVal,
+        guardian: guardianNameVal,
+        whatsappNumber: whatsappNumberVal,
         caste: casteVal,
         emisNo: emisNoVal,
-        guardianName: guardianNameVal,
-        whatsappNumber: whatsappNumberVal
+        emisNumber: emisNoVal
       });
       
       if (rowValError) {
@@ -654,13 +862,23 @@ export const bulkImportStudents = async (req, res) => {
           rollNumber: String(row['roll number'] || ''),
           admissionDate: parseExcelDate(row['admission date'] || row['date of admission']),
           studentStatus: String(row['student status'] || row['status'] || 'Active'),
-          academicYear: String(row['academic year'] || ''),
+          academicYear: activeYear.year,
           currentClass,
           section: section || null,
           addedById: req.user?.id
         };
 
         const studentRecord = await Student.create(studentPayload);
+
+        await StudentEnrollment.create({
+          studentId: studentRecord._id,
+          academicYearId: activeYear._id,
+          academicYear: activeYear.year,
+          className: currentClass,
+          sectionName: section || '',
+          status: 'Active',
+          joinedDate: new Date()
+        });
 
         try {
           await assignClassDefaultFeesToStudent(studentRecord);
@@ -806,6 +1024,7 @@ export const updateStudent = async (req, res) => {
   try {
     const { id } = req.params;
     const {
+      admissionNumber,
       studentName,
       fatherName,
       motherName,
@@ -850,7 +1069,41 @@ export const updateStudent = async (req, res) => {
       uniformDetails
     } = req.body;
 
-    const valError = validateStudentInput({ caste, emisNo, emisNumber, guardianName, guardian, whatsappNumber });
+    if (!admissionNumber) {
+      return res.status(400).json({ error: 'Admission Number is required.' });
+    }
+
+    if (section && !/^[a-zA-Z]+$/.test(section.trim())) {
+      return res.status(400).json({ error: 'Section can contain only alphabetic characters.' });
+    }
+
+    const admErr = validateAdmissionNumber(admissionNumber);
+    if (admErr) {
+      return res.status(400).json({ error: admErr });
+    }
+
+    const existingStudent = await Student.findOne({ 
+      admissionNumber: { $regex: new RegExp(`^${admissionNumber.trim()}$`, 'i') },
+      _id: { $ne: id }
+    });
+    if (existingStudent) {
+      return res.status(400).json({ error: 'Admission Number already exists. Please enter another Admission Number.' });
+    }
+
+    const valError = validateStudentInput({
+      fatherName,
+      motherName,
+      fatherPhone,
+      motherPhone,
+      fatherOccupation,
+      motherOccupation,
+      guardianName,
+      guardian,
+      whatsappNumber,
+      caste,
+      emisNo,
+      emisNumber
+    });
     if (valError) {
       return res.status(400).json({ error: valError });
     }
@@ -1164,6 +1417,7 @@ export const updateStudent = async (req, res) => {
       const resolvedGrandTotal = calculatedGrandTotal > 0 ? calculatedGrandTotal : normalizeNumber(grandTotal, resolvedBaseFee + resolvedIncludedChargesTotal + resolvedActivitiesTotal);
 
       const student = await Student.findByIdAndUpdate(id, {
+        admissionNumber: admissionNumber.trim(),
         studentName,
         fatherName,
         motherName,
@@ -1203,6 +1457,14 @@ export const updateStudent = async (req, res) => {
         grandTotal: resolvedGrandTotal
       }, { new: true, session });
 
+      if (student.currentClass && student.academicYear) {
+        await StudentEnrollment.findOneAndUpdate(
+          { studentId: id, academicYear: student.academicYear, status: 'Active' },
+          { className: student.currentClass, sectionName: student.section || '' },
+          { session }
+        );
+      }
+
       if (req.user) {
         await ActivityLog.create([{
           userId: req.user.id,
@@ -1234,6 +1496,16 @@ export const promoteStudents = async (req, res) => {
       return res.status(400).json({ error: 'fromAcademicYear, toAcademicYear, and classMapping are required.' });
     }
 
+    const fromYearDoc = await AcademicYear.findOne({ year: fromAcademicYear });
+    if (!fromYearDoc) {
+      return res.status(400).json({ error: `Please create Academic Year ${fromAcademicYear} before promoting students.` });
+    }
+
+    const toYearDoc = await AcademicYear.findOne({ year: toAcademicYear });
+    if (!toYearDoc) {
+      return res.status(400).json({ error: `Please create Academic Year ${toAcademicYear} before promoting students.` });
+    }
+
     const students = await Student.find({
       $or: [
         { academicYear: fromAcademicYear },
@@ -1262,6 +1534,12 @@ export const promoteStudents = async (req, res) => {
         if (nextClass === 'Graduated') {
           student.studentStatus = 'Graduated';
           await student.save();
+
+          await StudentEnrollment.updateMany(
+            { studentId: student._id, academicYear: fromAcademicYear, status: 'Active' },
+            { $set: { status: 'Graduated', promotedDate: new Date() } }
+          );
+
           graduatedCount++;
           continue;
         }
@@ -1295,6 +1573,23 @@ export const promoteStudents = async (req, res) => {
         student.currentClass = nextClass;
         student.academicYear = toAcademicYear;
         await student.save();
+
+        // 4. Update previous enrollment record to Promoted
+        await StudentEnrollment.updateMany(
+          { studentId: student._id, academicYear: fromAcademicYear, status: 'Active' },
+          { $set: { status: 'Promoted', promotedDate: new Date() } }
+        );
+
+        // 5. Create new enrollment record for next academic year
+        await StudentEnrollment.create({
+          studentId: student._id,
+          academicYearId: toYearDoc._id,
+          academicYear: toAcademicYear,
+          className: nextClass,
+          sectionName: student.section || '',
+          status: 'Active',
+          joinedDate: new Date()
+        });
 
         promotedCount++;
       }
