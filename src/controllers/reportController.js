@@ -1,4 +1,28 @@
-import { Student, Payment, StudentFee, FeeCategory, Application } from '../models/index.js';
+import { Student, Payment, StudentFee, FeeCategory, Application, StudentFeeConcession } from '../models/index.js';
+
+const adjustFeesWithActiveConcessions = async (studentFees) => {
+  if (!studentFees || studentFees.length === 0) return studentFees;
+  
+  const feeIds = studentFees.map(f => f._id);
+  const concessions = await StudentFeeConcession.find({
+    studentFeeId: { $in: feeIds },
+    status: 'Active'
+  }).lean();
+  
+  const concessionMap = new Map(concessions.map(c => [c.studentFeeId.toString(), c.lessAmount]));
+  
+  return studentFees.map(fee => {
+    const fObj = fee.toObject ? fee.toObject() : { ...fee };
+    const lessAmt = concessionMap.get(fObj._id.toString()) || 0;
+    if (lessAmt > 0) {
+      fObj.lessAmount = lessAmt;
+      fObj.remainingAmount = Math.max(0, fObj.totalAmount - lessAmt - (fObj.paidAmount || 0));
+    } else {
+      fObj.lessAmount = 0;
+    }
+    return fObj;
+  });
+};
 
 export const getDailyCollection = async (req, res) => {
   try {
@@ -181,8 +205,11 @@ export const getPendingFees = async (req, res) => {
   try {
     const students = await Student.find().lean();
     const studentIds = students.map(s => s._id);
-    const studentFees = await StudentFee.find({ studentId: { $in: studentIds } })
-      .populate('feeCategoryId');
+    let studentFees = await StudentFee.find({ studentId: { $in: studentIds } })
+      .populate('feeCategoryId')
+      .lean();
+
+    studentFees = await adjustFeesWithActiveConcessions(studentFees);
 
     const feesByStudent = {};
     studentFees.forEach(fee => {
@@ -206,7 +233,7 @@ export const getPendingFees = async (req, res) => {
       let pendingAmount = 0;
 
       if (fullFee) {
-        pendingAmount = Math.max(0, fullFee.totalAmount - totalPaid);
+        pendingAmount = Math.max(0, fullFee.totalAmount - (fullFee.lessAmount || 0) - totalPaid);
       } else {
         pendingAmount = student.studentFees.reduce((sum, f) => sum + f.remainingAmount, 0);
       }
@@ -232,8 +259,11 @@ export const getStudentFeeReport = async (req, res) => {
   try {
     const students = await Student.find().lean();
     const studentIds = students.map(s => s._id);
-    const studentFees = await StudentFee.find({ studentId: { $in: studentIds } })
-      .populate('feeCategoryId');
+    let studentFees = await StudentFee.find({ studentId: { $in: studentIds } })
+      .populate('feeCategoryId')
+      .lean();
+
+    studentFees = await adjustFeesWithActiveConcessions(studentFees);
 
     const feesByStudent = {};
     studentFees.forEach(fee => {
@@ -254,10 +284,10 @@ export const getStudentFeeReport = async (req, res) => {
       let totalRemaining = 0;
 
       if (fullFee) {
-        totalAssigned = fullFee.totalAmount;
+        totalAssigned = fullFee.totalAmount - (fullFee.lessAmount || 0);
         totalRemaining = Math.max(0, totalAssigned - totalPaid);
       } else {
-        totalAssigned = student.studentFees.reduce((sum, f) => sum + f.totalAmount, 0);
+        totalAssigned = student.studentFees.reduce((sum, f) => sum + (f.totalAmount - (f.lessAmount || 0)), 0);
         totalRemaining = student.studentFees.reduce((sum, f) => sum + f.remainingAmount, 0);
       }
 
@@ -282,7 +312,9 @@ export const getCategoryWiseCollection = async (req, res) => {
   try {
     const feeCategories = await FeeCategory.find().lean();
     const categoryIds = feeCategories.map(c => c._id);
-    const studentFees = await StudentFee.find({ feeCategoryId: { $in: categoryIds } });
+    let studentFees = await StudentFee.find({ feeCategoryId: { $in: categoryIds } }).lean();
+
+    studentFees = await adjustFeesWithActiveConcessions(studentFees);
 
     const feesByCategory = {};
     studentFees.forEach(fee => {
@@ -296,7 +328,7 @@ export const getCategoryWiseCollection = async (req, res) => {
     });
 
     const report = feeCategories.map(category => {
-      const totalExpected = category.studentFees.reduce((sum, f) => sum + f.totalAmount, 0);
+      const totalExpected = category.studentFees.reduce((sum, f) => sum + (f.totalAmount - (f.lessAmount || 0)), 0);
       const totalCollected = category.studentFees.reduce((sum, f) => sum + f.paidAmount, 0);
       const totalPending = category.studentFees.reduce((sum, f) => sum + f.remainingAmount, 0);
 

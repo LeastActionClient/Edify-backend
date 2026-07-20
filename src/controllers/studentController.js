@@ -17,7 +17,8 @@ import {
   Activity,
   StockHistory,
   AcademicYear,
-  StudentEnrollment
+  StudentEnrollment,
+  StudentFeeConcession
 } from '../models/index.js';
 import { createStudentWithGeneratedAdmissionNumber } from '../services/studentAdmissionService.js';
 import { isDuplicateAdmissionNumberError } from '../services/admissionNumberService.js';
@@ -111,9 +112,34 @@ export const getStudents = async (req, res) => {
       .populate('feeCategoryId')
       .lean();
 
+    const concessions = await StudentFeeConcession.find({
+      studentId: { $in: studentIds },
+      status: { $in: ['Active', 'Inactive'] }
+    }).lean();
+
+    const concessionMap = new Map();
+    concessions.forEach(c => {
+      concessionMap.set(c.studentFeeId.toString(), c);
+    });
+
     const feeMap = {};
     studentFees.forEach(fee => {
+      const concession = concessionMap.get(fee._id.toString());
       fee.feeCategory = fee.feeCategoryId; // Map populated field for frontend
+      
+      if (concession) {
+        fee.lessAmount = concession.lessAmount;
+        fee.concessionStatus = concession.status; // 'Active' or 'Inactive'
+        if (concession.status === 'Active') {
+          fee.remainingAmount = Math.max(0, fee.totalAmount - concession.lessAmount - (fee.paidAmount || 0));
+        } else {
+          fee.remainingAmount = Math.max(0, fee.totalAmount - (fee.paidAmount || 0));
+        }
+      } else {
+        fee.lessAmount = 0;
+        fee.concessionStatus = 'None';
+      }
+      
       const sid = fee.studentId.toString();
       if (!feeMap[sid]) feeMap[sid] = [];
       feeMap[sid].push(fee);
@@ -169,11 +195,23 @@ export const getStudentById = async (req, res) => {
           healedAmt = (topLen * topPrice) + (bottomLen * bottomPrice);
         }
         if (healedAmt <= 0) {
-          const classDoc = await Class.findOne({ name: f.className || student.currentClass });
-          if (classDoc) {
-            const feeConfig = classDoc.defaultFees?.[cat._id.toString()];
-            if (typeof feeConfig === 'number' && feeConfig > 0) healedAmt = feeConfig;
-            else if (feeConfig?.amount && parseFloat(feeConfig.amount) > 0) healedAmt = parseFloat(feeConfig.amount);
+          const classDoc = await Class.findOne({ name: f.className || student.currentClass }).lean();
+          let sectionDoc = null;
+          if (classDoc && student.section) {
+            sectionDoc = await Section.findOne({ name: student.section, classId: classDoc._id }).lean();
+          }
+          const mergedDefaultFees = { ...(classDoc?.defaultFees || {}), ...(sectionDoc?.defaultFees || {}) };
+          const feeConfig = mergedDefaultFees[cat._id.toString()];
+
+          if (typeof feeConfig === 'number' && feeConfig > 0) {
+            healedAmt = feeConfig;
+          } else if (feeConfig && typeof feeConfig === 'object') {
+            healedAmt = parseFloat(feeConfig.amount) || 0;
+            if (cat.name.toLowerCase() === 'uniform' && feeConfig.pricing) {
+              const topPrice = parseFloat(feeConfig.pricing.topPerMetre || 0);
+              const bottomPrice = parseFloat(feeConfig.pricing.bottomPerMetre || 0);
+              healedAmt = topPrice + bottomPrice;
+            }
           }
         }
         if (healedAmt > 0) {
@@ -187,12 +225,34 @@ export const getStudentById = async (req, res) => {
       }
     }
 
+    const concessions = await StudentFeeConcession.find({
+      studentId: id,
+      status: { $in: ['Active', 'Inactive'] }
+    }).lean();
+
+    const concessionMap = new Map();
+    concessions.forEach(c => {
+      concessionMap.set(c.studentFeeId.toString(), c);
+    });
+
     const studentFees = studentFeesRaw.map(fee => {
       const fObj = fee.toObject ? fee.toObject() : fee;
-      return {
-        ...fObj,
-        feeCategory: fObj.feeCategoryId
-      };
+      const concession = concessionMap.get(fObj._id.toString());
+      fObj.feeCategory = fObj.feeCategoryId;
+      
+      if (concession) {
+        fObj.lessAmount = concession.lessAmount;
+        fObj.concessionStatus = concession.status; // 'Active' or 'Inactive'
+        if (concession.status === 'Active') {
+          fObj.remainingAmount = Math.max(0, fObj.totalAmount - concession.lessAmount - (fObj.paidAmount || 0));
+        } else {
+          fObj.remainingAmount = Math.max(0, fObj.totalAmount - (fObj.paidAmount || 0));
+        }
+      } else {
+        fObj.lessAmount = 0;
+        fObj.concessionStatus = 'None';
+      }
+      return fObj;
     });
 
     const currentClassFees = studentFees.filter(f =>

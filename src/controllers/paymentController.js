@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { Student, StudentFee, Payment, Invoice, FeeCategory, ActivityLog, StockHistory } from '../models/index.js';
+import { Student, StudentFee, Payment, Invoice, FeeCategory, ActivityLog, StockHistory, StudentFeeConcession } from '../models/index.js';
 import PDFDocument from 'pdfkit';
 import path from 'path';
 import fs from 'fs';
@@ -321,7 +321,9 @@ const drawReceiptCopy = ({
   const summaryWidth = mmToPt(70);
   const summaryX = innerX + innerWidth - summaryWidth;
 
-  doc.roundedRect(summaryX, summaryTop, summaryWidth, mmToPt(18), 1.2)
+  const netPayable = totals.totalAmount - totals.discountAmount;
+
+  doc.roundedRect(summaryX, summaryTop, summaryWidth, mmToPt(21), 1.2)
     .lineWidth(0.4)
     .strokeColor('#CBD5E1')
     .stroke();
@@ -332,15 +334,17 @@ const drawReceiptCopy = ({
   doc.fillColor('#0F172A').font('Helvetica').fontSize(7.6);
   const summaryLineY = summaryTop + mmToPt(4.5);
   const summaryRowGap = mmToPt(3.2);
-  doc.text('Total Amount', summaryX + mmToPt(1), summaryLineY, { width: summaryWidth - mmToPt(16) });
+  doc.text('Original Fee', summaryX + mmToPt(1), summaryLineY, { width: summaryWidth - mmToPt(16) });
   doc.text(formatReceiptCurrency(totals.totalAmount), summaryX + mmToPt(16), summaryLineY, { width: summaryWidth - mmToPt(17), align: 'right' });
-  doc.text('Less Amount', summaryX + mmToPt(1), summaryLineY + summaryRowGap, { width: summaryWidth - mmToPt(16) });
+  doc.text('Total Less Amount', summaryX + mmToPt(1), summaryLineY + summaryRowGap, { width: summaryWidth - mmToPt(16) });
   doc.text(formatReceiptCurrency(totals.discountAmount), summaryX + mmToPt(16), summaryLineY + summaryRowGap, { width: summaryWidth - mmToPt(17), align: 'right' });
-  doc.text('Paid Amount', summaryX + mmToPt(1), summaryLineY + summaryRowGap * 2, { width: summaryWidth - mmToPt(16) });
-  doc.text(formatReceiptCurrency(totals.paidAmount), summaryX + mmToPt(16), summaryLineY + summaryRowGap * 2, { width: summaryWidth - mmToPt(17), align: 'right' });
+  doc.text('Net Payable', summaryX + mmToPt(1), summaryLineY + summaryRowGap * 2, { width: summaryWidth - mmToPt(16) });
+  doc.text(formatReceiptCurrency(netPayable), summaryX + mmToPt(16), summaryLineY + summaryRowGap * 2, { width: summaryWidth - mmToPt(17), align: 'right' });
+  doc.text('Paid This Invoice', summaryX + mmToPt(1), summaryLineY + summaryRowGap * 3, { width: summaryWidth - mmToPt(16) });
+  doc.text(formatReceiptCurrency(totals.paidAmount), summaryX + mmToPt(16), summaryLineY + summaryRowGap * 3, { width: summaryWidth - mmToPt(17), align: 'right' });
   doc.font('Helvetica-Bold');
-  doc.text('Balance Amount', summaryX + mmToPt(1), summaryLineY + summaryRowGap * 3, { width: summaryWidth - mmToPt(16) });
-  doc.text(formatReceiptCurrency(totals.balanceAmount), summaryX + mmToPt(16), summaryLineY + summaryRowGap * 3, { width: summaryWidth - mmToPt(17), align: 'right' });
+  doc.text('Balance Pending', summaryX + mmToPt(1), summaryLineY + summaryRowGap * 4, { width: summaryWidth - mmToPt(16) });
+  doc.text(formatReceiptCurrency(totals.balanceAmount), summaryX + mmToPt(16), summaryLineY + summaryRowGap * 4, { width: summaryWidth - mmToPt(17), align: 'right' });
 
   doc.restore();
 };
@@ -384,11 +388,57 @@ const getInvoicePaymentData = async (id) => {
     payment.application = payment.applicationId;
   }
 
+  // Load and apply concessions dynamically to match discountAmount in PDF / invoice details
+  const studentIdForConcessions = payment.studentId?._id || payment.studentId;
+  const concessions = studentIdForConcessions 
+    ? await StudentFeeConcession.find({ studentId: studentIdForConcessions, status: { $in: ['Active', 'Inactive'] } }).lean()
+    : [];
+  const concessionMap = new Map(concessions.map(c => [c.studentFeeId.toString(), c]));
+
   if (payment.studentFeeId) {
     payment.studentFee = payment.studentFeeId;
     if (payment.studentFee.feeCategoryId) {
       payment.studentFee.feeCategory = payment.studentFee.feeCategoryId;
     }
+    const concession = concessionMap.get(payment.studentFee._id.toString());
+    if (concession) {
+      payment.studentFee.lessAmount = concession.lessAmount;
+      payment.studentFee.discountAmount = concession.lessAmount;
+      payment.studentFee.concessionStatus = concession.status;
+      if (concession.status === 'Active') {
+        payment.studentFee.remainingAmount = Math.max(0, payment.studentFee.totalAmount - concession.lessAmount - (payment.studentFee.paidAmount || 0));
+      } else {
+        payment.studentFee.remainingAmount = Math.max(0, payment.studentFee.totalAmount - (payment.studentFee.paidAmount || 0));
+      }
+    } else {
+      payment.studentFee.lessAmount = 0;
+      payment.studentFee.discountAmount = 0;
+      payment.studentFee.concessionStatus = 'None';
+    }
+  }
+
+  if (payment.feeAllocations && payment.feeAllocations.length > 0) {
+    payment.feeAllocations.forEach(alloc => {
+      if (alloc.studentFeeId) {
+        const concession = concessionMap.get(alloc.studentFeeId._id.toString());
+        if (concession) {
+          alloc.studentFeeId.lessAmount = concession.lessAmount;
+          alloc.studentFeeId.discountAmount = concession.lessAmount;
+          alloc.discountAmount = concession.lessAmount;
+          alloc.studentFeeId.concessionStatus = concession.status;
+          if (concession.status === 'Active') {
+            alloc.studentFeeId.remainingAmount = Math.max(0, alloc.studentFeeId.totalAmount - concession.lessAmount - (alloc.studentFeeId.paidAmount || 0));
+          } else {
+            alloc.studentFeeId.remainingAmount = Math.max(0, alloc.studentFeeId.totalAmount - (alloc.studentFeeId.paidAmount || 0));
+          }
+        } else {
+          alloc.studentFeeId.lessAmount = 0;
+          alloc.studentFeeId.discountAmount = 0;
+          alloc.discountAmount = 0;
+          alloc.studentFeeId.concessionStatus = 'None';
+        }
+      }
+    });
   }
 
   if (payment.recordedById) {
@@ -424,16 +474,27 @@ export const createPayment = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const { studentId, studentFeeIds, amount, paymentMethod, referenceNumber, remarks } = req.body;
+    const { studentId, studentFeeIds, amount, feeAllocations: clientAllocations, paymentMethod, referenceNumber, remarks } = req.body;
 
-    if (!studentFeeIds || !Array.isArray(studentFeeIds) || studentFeeIds.length === 0) {
+    let targetAllocations = [];
+    let resolvedFeeIds = studentFeeIds;
+
+    if (clientAllocations && Array.isArray(clientAllocations) && clientAllocations.length > 0) {
+      targetAllocations = clientAllocations.map(a => ({
+        studentFeeId: a.studentFeeId.toString(),
+        amount: parseFloat(a.amount || 0)
+      }));
+      resolvedFeeIds = targetAllocations.map(a => a.studentFeeId);
+    }
+
+    if (!resolvedFeeIds || !Array.isArray(resolvedFeeIds) || resolvedFeeIds.length === 0) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ error: 'No fees selected for payment' });
     }
 
     // Self-heal any zero-amount StudentFee documents in MongoDB before balance validation
-    for (const feeId of studentFeeIds) {
+    for (const feeId of resolvedFeeIds) {
       const feeDoc = await StudentFee.findById(feeId).session(session);
       if (feeDoc && (feeDoc.totalAmount === 0 || feeDoc.remainingAmount === 0) && feeDoc.paidAmount === 0) {
         const cat = await FeeCategory.findById(feeDoc.feeCategoryId).session(session);
@@ -465,41 +526,118 @@ export const createPayment = async (req, res) => {
       }
     }
 
-    const unpaidFees = await StudentFee.find({ _id: { $in: studentFeeIds }, studentId }).session(session);
-    if (unpaidFees.length !== studentFeeIds.length) {
+    const unpaidFees = await StudentFee.find({ _id: { $in: resolvedFeeIds }, studentId })
+      .populate('feeCategoryId')
+      .session(session);
+
+    if (unpaidFees.length !== resolvedFeeIds.length) {
       await session.abortTransaction();
       session.endSession();
       return res.status(404).json({ error: 'Some fee records were not found or do not belong to this student' });
     }
 
-    const totalRemaining = unpaidFees.reduce((sum, f) => sum + f.remainingAmount, 0);
-    if (amount > totalRemaining) {
-      await session.abortTransaction();
-      session.endSession();
-      return res.status(400).json({
-        error: `Payment amount (Rs. ${amount}) cannot exceed the total remaining balance (Rs. ${totalRemaining}) for the selected fees.`
-      });
+    // Load active/inactive concessions for these fees
+    const concessions = await StudentFeeConcession.find({
+      studentFeeId: { $in: resolvedFeeIds },
+      status: { $in: ['Active', 'Inactive'] }
+    }).session(session).lean();
+
+    const concessionMap = new Map(concessions.map(c => [c.studentFeeId.toString(), c]));
+
+    // Adjust the remaining amounts in memory for total validation and allocation
+    unpaidFees.forEach(fee => {
+      const concession = concessionMap.get(fee._id.toString());
+      if (concession && concession.status === 'Active') {
+        fee.lessAmount = concession.lessAmount;
+        fee.originalRemainingAmount = fee.remainingAmount;
+        fee.remainingAmount = Math.max(0, fee.totalAmount - concession.lessAmount - fee.paidAmount);
+      } else {
+        fee.lessAmount = 0;
+        fee.originalRemainingAmount = fee.remainingAmount;
+        fee.remainingAmount = Math.max(0, fee.totalAmount - fee.paidAmount);
+      }
+    });
+
+    let finalAmount = amount;
+    const isClientAllocation = clientAllocations && Array.isArray(clientAllocations) && clientAllocations.length > 0;
+
+    if (isClientAllocation) {
+      for (const alloc of targetAllocations) {
+        const fee = unpaidFees.find(f => f._id.toString() === alloc.studentFeeId);
+        if (!fee) {
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(404).json({ error: 'Associated Student Fee record for allocation not found.' });
+        }
+
+        if (alloc.amount < 0) {
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(400).json({ error: 'Allocation amount cannot be negative.' });
+        }
+
+        if (alloc.amount > fee.remainingAmount) {
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(400).json({
+            error: `Entered amount (Rs. ${alloc.amount}) cannot exceed the remaining payable amount (Rs. ${fee.remainingAmount}) for ${fee.feeCategoryId?.name || 'Fee'}.`
+          });
+        }
+      }
+
+      finalAmount = targetAllocations.reduce((sum, a) => sum + a.amount, 0);
+      const totalRemaining = unpaidFees.reduce((sum, f) => sum + f.remainingAmount, 0);
+
+      if (totalRemaining > 0 && finalAmount <= 0) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({ error: 'Total payment amount must be greater than zero.' });
+      }
+      if (finalAmount < 0) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({ error: 'Total payment amount cannot be negative.' });
+      }
+    } else {
+      const totalRemaining = unpaidFees.reduce((sum, f) => sum + f.remainingAmount, 0);
+      if (amount > totalRemaining) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          error: `Payment amount (Rs. ${amount}) cannot exceed the total remaining balance (Rs. ${totalRemaining}) for the selected fees.`
+        });
+      }
     }
 
-    let amountLeftToDistribute = amount;
+    let amountLeftToDistribute = finalAmount;
     const feeAllocations = [];
-    
+
     for (const fee of unpaidFees) {
-      if (amountLeftToDistribute <= 0) break;
-      
-      const paymentAmountForFee = Math.min(amountLeftToDistribute, fee.remainingAmount);
-      amountLeftToDistribute -= paymentAmountForFee;
-      feeAllocations.push({ studentFeeId: fee._id, amount: paymentAmountForFee });
-      
-      const newRemainingAmount = fee.remainingAmount - paymentAmountForFee;
+      let paymentAmountForFee = 0;
+
+      if (isClientAllocation) {
+        const alloc = targetAllocations.find(a => a.studentFeeId === fee._id.toString());
+        paymentAmountForFee = alloc ? alloc.amount : 0;
+      } else {
+        if (amountLeftToDistribute <= 0) break;
+        paymentAmountForFee = Math.min(amountLeftToDistribute, fee.remainingAmount);
+        amountLeftToDistribute -= paymentAmountForFee;
+      }
+
+      if (paymentAmountForFee < 0) continue;
+
+      feeAllocations.push({ studentFeeId: fee._id, amount: paymentAmountForFee, discountAmount: fee.lessAmount || 0 });
+
+      const originalRem = fee.originalRemainingAmount !== undefined ? fee.originalRemainingAmount : fee.remainingAmount;
+      const newRemainingAmount = originalRem - paymentAmountForFee;
       const newPaidAmount = fee.paidAmount + paymentAmountForFee;
-      const feeStatus = newRemainingAmount === 0 ? 'PAID' : 'PARTIAL';
-      
+      const feeStatus = Math.max(0, fee.totalAmount - (fee.lessAmount || 0) - newPaidAmount) === 0 ? 'PAID' : 'PARTIAL';
+
       await StudentFee.findByIdAndUpdate(fee._id, {
         paidAmount: newPaidAmount,
         remainingAmount: newRemainingAmount
       }, { session });
-      
+
       if (feeStatus === 'PAID') {
         const category = await FeeCategory.findById(fee.feeCategoryId).session(session);
         if (category && category.name.toLowerCase().includes('full')) {
@@ -512,30 +650,17 @@ export const createPayment = async (req, res) => {
       }
     }
 
-    // Pre-validate stock availability for any stock items in payment
-    for (const alloc of feeAllocations) {
-      const studentFee = unpaidFees.find(f => f._id.toString() === alloc.studentFeeId.toString());
-      if (studentFee && studentFee.feeCategoryId) {
-        const cat = await FeeCategory.findById(studentFee.feeCategoryId).session(session);
-        if (cat && cat.isStockItem) {
-          if ((cat.currentStock || 0) <= 0) {
-            await session.abortTransaction();
-            session.endSession();
-            return res.status(400).json({ error: `Insufficient stock for ${cat.name}. Current stock is 0.` });
-          }
-        }
-      }
-    }
+    const totalRemaining = unpaidFees.reduce((sum, f) => sum + f.remainingAmount, 0);
 
     const [payment] = await Payment.create([{
       studentId,
       isFullPayment: false, 
       feeAllocations,
-      amount,
+      amount: finalAmount,
       paymentMethod,
       referenceNumber,
       remarks,
-      status: amount === totalRemaining ? 'PAID' : 'PARTIAL',
+      status: finalAmount >= totalRemaining ? 'PAID' : 'PARTIAL',
       inventoryProcessed: false,
       recordedById: req.user.id
     }], { session });
@@ -590,7 +715,7 @@ export const createPayment = async (req, res) => {
     await ActivityLog.create([{
       userId: req.user.id,
       action: 'CREATED_PAYMENT',
-      details: `Payment of ${amount} recorded for student ${studentId} covering multiple fees`
+      details: `Payment of ${finalAmount} recorded for student ${studentId} covering multiple fees`
     }], { session });
     
     await session.commitTransaction();
@@ -601,7 +726,7 @@ export const createPayment = async (req, res) => {
     await session.abortTransaction();
     session.endSession();
     console.error(error);
-    res.status(500).json({ error: error.message || 'Error creating payment' });
+    res.status(500).json({ error: error.message || 'Server error creating payment' });
   }
 };
 
@@ -622,6 +747,14 @@ export const getPaymentHistory = async (req, res) => {
       invoiceMap[inv.paymentId.toString()] = inv;
     });
 
+    const studentIds = payments.map(p => p.studentId?._id).filter(Boolean);
+    const concessions = await StudentFeeConcession.find({
+      studentId: { $in: studentIds },
+      status: { $in: ['Active', 'Inactive'] }
+    }).lean();
+
+    const concessionMap = new Map(concessions.map(c => [c.studentFeeId.toString(), c]));
+
     const paymentsWithInvoices = payments.map(p => {
       const pObj = p.toObject();
       pObj.invoice = invoiceMap[p._id.toString()] || null;
@@ -636,6 +769,44 @@ export const getPaymentHistory = async (req, res) => {
         if (pObj.studentFee.feeCategoryId) {
           pObj.studentFee.feeCategory = pObj.studentFee.feeCategoryId;
         }
+        const concession = concessionMap.get(pObj.studentFee._id.toString());
+        if (concession) {
+          pObj.studentFee.lessAmount = concession.lessAmount;
+          pObj.studentFee.discountAmount = concession.lessAmount;
+          pObj.studentFee.concessionStatus = concession.status;
+          if (concession.status === 'Active') {
+            pObj.studentFee.remainingAmount = Math.max(0, pObj.studentFee.totalAmount - concession.lessAmount - (pObj.studentFee.paidAmount || 0));
+          } else {
+            pObj.studentFee.remainingAmount = Math.max(0, pObj.studentFee.totalAmount - (pObj.studentFee.paidAmount || 0));
+          }
+        } else {
+          pObj.studentFee.lessAmount = 0;
+          pObj.studentFee.discountAmount = 0;
+          pObj.studentFee.concessionStatus = 'None';
+        }
+      }
+      if (pObj.feeAllocations && pObj.feeAllocations.length > 0) {
+        pObj.feeAllocations.forEach(alloc => {
+          if (alloc.studentFeeId) {
+            const concession = concessionMap.get(alloc.studentFeeId._id.toString());
+            if (concession) {
+              alloc.studentFeeId.lessAmount = concession.lessAmount;
+              alloc.studentFeeId.discountAmount = concession.lessAmount;
+              alloc.discountAmount = concession.lessAmount;
+              alloc.studentFeeId.concessionStatus = concession.status;
+              if (concession.status === 'Active') {
+                alloc.studentFeeId.remainingAmount = Math.max(0, alloc.studentFeeId.totalAmount - concession.lessAmount - (alloc.studentFeeId.paidAmount || 0));
+              } else {
+                alloc.studentFeeId.remainingAmount = Math.max(0, alloc.studentFeeId.totalAmount - (alloc.studentFeeId.paidAmount || 0));
+              }
+            } else {
+              alloc.studentFeeId.lessAmount = 0;
+              alloc.studentFeeId.discountAmount = 0;
+              alloc.discountAmount = 0;
+              alloc.studentFeeId.concessionStatus = 'None';
+            }
+          }
+        });
       }
       if (pObj.recordedById) {
         pObj.recordedBy = pObj.recordedById;

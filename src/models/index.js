@@ -19,4 +19,6 @@ export { default as ExportLog } from './ExportLog.js';
 export { default as StockHistory } from './StockHistory.js';
 export { default as AcademicYear } from './AcademicYear.js';
 export { default as StudentEnrollment } from './StudentEnrollment.js';
+export { default as StudentFeeConcession } from './StudentFeeConcession.js';
+
 

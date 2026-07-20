@@ -12,6 +12,7 @@ import includedChargeRoutes from './includedChargeRoutes.js';
 import activityRoutes from './activityRoutes.js';
 import exportRoutes from './exportRoutes.js';
 import academicYearRoutes from './academicYearRoutes.js';
+import concessionRoutes from './concessionRoutes.js';
 
 const router = Router();
 
@@ -28,6 +29,8 @@ router.use('/included-charges', includedChargeRoutes);
 router.use('/activities', activityRoutes);
 router.use('/exports', exportRoutes);
 router.use('/academic-years', academicYearRoutes);
+router.use('/concessions', concessionRoutes);
+
 
 
 export default router;
