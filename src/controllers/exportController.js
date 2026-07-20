@@ -6,10 +6,41 @@ import {
   StudentActivity,
   ExportLog,
   Class,
-  FeeCategory
+  FeeCategory,
+  StudentFeeConcession
 } from '../models/index.js';
 import PDFDocument from 'pdfkit';
 import xlsx from 'xlsx';
+
+const adjustFeesWithActiveConcessions = async (studentFees) => {
+  if (!studentFees || studentFees.length === 0) return studentFees;
+  
+  const feeIds = studentFees.map(f => f._id);
+  const concessions = await StudentFeeConcession.find({
+    studentFeeId: { $in: feeIds },
+    status: { $in: ['Active', 'Inactive'] }
+  }).lean();
+  
+  const concessionMap = new Map(concessions.map(c => [c.studentFeeId.toString(), c]));
+  
+  return studentFees.map(fee => {
+    const fObj = fee.toObject ? fee.toObject() : { ...fee };
+    const concession = concessionMap.get(fObj._id.toString());
+    if (concession) {
+      fObj.lessAmount = concession.lessAmount;
+      fObj.concessionStatus = concession.status;
+      if (concession.status === 'Active') {
+        fObj.remainingAmount = Math.max(0, fObj.totalAmount - concession.lessAmount - (fObj.paidAmount || 0));
+      } else {
+        fObj.remainingAmount = Math.max(0, fObj.totalAmount - (fObj.paidAmount || 0));
+      }
+    } else {
+      fObj.lessAmount = 0;
+      fObj.concessionStatus = 'None';
+    }
+    return fObj;
+  });
+};
 
 export const exportStudents = async (req, res) => {
   try {
@@ -82,12 +113,14 @@ export const exportStudents = async (req, res) => {
     const fetchedStudentIds = students.map(s => s._id);
 
     // Fetch related data in bulk
-    const [studentFees, payments, includedCharges, activities] = await Promise.all([
+    let [studentFees, payments, includedCharges, activities] = await Promise.all([
       StudentFee.find({ studentId: { $in: fetchedStudentIds } }).populate('feeCategoryId').lean(),
       Payment.find({ studentId: { $in: fetchedStudentIds } }).sort({ paymentDate: -1 }).lean(),
       StudentIncludedCharge.find({ studentId: { $in: fetchedStudentIds } }).populate('includedChargeId').lean(),
       StudentActivity.find({ studentId: { $in: fetchedStudentIds } }).populate('activityId').lean()
     ]);
+
+    studentFees = await adjustFeesWithActiveConcessions(studentFees);
 
     // Group related data by student
     const feeMap = {};
@@ -282,7 +315,12 @@ export const exportStudents = async (req, res) => {
           doc.fontSize(14).fillColor('#ea580c').text('Fee History');
           doc.fillColor('black').fontSize(10).moveDown(0.5);
           student.fees.forEach(f => {
-            doc.text(`- ${f.feeCategoryId?.name || 'Unknown'}: Total Rs.${f.totalAmount}, Paid Rs.${f.paidAmount}, Pending Rs.${f.remainingAmount}`);
+            let desc = `- ${f.feeCategoryId?.name || 'Unknown'}: Total Rs.${f.totalAmount}`;
+            if (f.lessAmount > 0) {
+              desc += `, Less Rs.${f.lessAmount} (${f.concessionStatus})`;
+            }
+            desc += `, Paid Rs.${f.paidAmount}, Pending Rs.${f.remainingAmount}`;
+            doc.text(desc);
           });
           doc.moveDown(1.5);
         }

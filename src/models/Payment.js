@@ -8,7 +8,8 @@ const paymentSchema = new mongoose.Schema({
   isFullPayment: { type: Boolean, default: false },
   feeAllocations: [{
     studentFeeId: { type: mongoose.Schema.Types.ObjectId, ref: 'StudentFee' },
-    amount: Number
+    amount: Number,
+    discountAmount: { type: Number, default: 0 }
   }],
   amount: { type: Number, required: true },
   paymentDate: { type: Date, default: Date.now },
