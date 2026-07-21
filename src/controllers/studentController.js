@@ -887,6 +887,13 @@ export const bulkImportStudents = async (req, res) => {
         continue;
       }
 
+      const studentName = String(row['student name'] || row['name'] || row['studentname'] || '').trim();
+      if (!studentName) {
+        errors.push(`Row ${i + 2}: Student Name is missing.`);
+        validationErrorsCount++;
+        continue;
+      }
+
       const casteVal = String(row['caste'] || '').trim();
       const emisNoVal = String(row['emis no'] || row['emis number'] || row['emis'] || '').trim();
       const guardianNameVal = String(row['guardian name'] || row['guardian'] || '').trim();
@@ -975,7 +982,7 @@ export const bulkImportStudents = async (req, res) => {
           errors.push(`Row ${i + 2}: Duplicate Admission Number`);
           duplicateCount++;
         } else {
-          errors.push(`Row ${i + 2}: Error saving to DB: ${err.message}`);
+          errors.push(`Row ${i + 2}: ${err.message}`);
           dbErrorsCount++;
         }
       }

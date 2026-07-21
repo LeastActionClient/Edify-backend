@@ -4,7 +4,6 @@ export const getClasses = async (req, res) => {
   try {
     const classes = await Class.find()
       .select('name defaultFees createdAt updatedAt')
-      .sort({ name: 1 })
       .lean();
 
     const classIds = classes.map((c) => c._id);
@@ -22,10 +21,31 @@ export const getClasses = async (req, res) => {
       sectionsByClass[key].push(s);
     });
 
-    res.json(classes.map((c) => ({
+    const classSortFn = (a, b) => {
+      const preSchoolOrder = { 'pre-kg': 1, 'lkg': 2, 'ukg': 3 };
+      const aNorm = String(a).trim().toLowerCase();
+      const bNorm = String(b).trim().toLowerCase();
+      const isPreA = preSchoolOrder[aNorm];
+      const isPreB = preSchoolOrder[bNorm];
+      if (isPreA && isPreB) return isPreA - isPreB;
+      if (isPreA) return -1;
+      if (isPreB) return 1;
+      const numA = parseInt(aNorm, 10);
+      const numB = parseInt(bNorm, 10);
+      const isNumA = !isNaN(numA);
+      const isNumB = !isNaN(numB);
+      if (isNumA && isNumB) return numA - numB;
+      if (isNumA) return 1;
+      if (isNumB) return -1;
+      return aNorm.localeCompare(bNorm);
+    };
+
+    const sortedClasses = classes.map((c) => ({
       ...c,
       sections: sectionsByClass[c._id.toString()] || []
-    })));
+    })).sort((x, y) => classSortFn(x.name, y.name));
+
+    res.json(sortedClasses);
   } catch (error) {
     res.status(500).json({ error: 'Error fetching classes' });
   }
