@@ -101,6 +101,25 @@ export const generateAdmissionNumber = async (session = null) => {
   return `${prefix}${String(value).padStart(padding, '0')}`;
 };
 
+export const peekNextAdmissionNumber = async () => {
+  const seed = await getSeedFromLatestStudent();
+  const sequence = await AdmissionSequence.findOne({ _id: SEQUENCE_ID });
+
+  let prefix = seed.prefix || DEFAULT_PREFIX;
+  let padding = Number(seed.padding || DEFAULT_PADDING);
+  let value = Number(seed.value);
+
+  if (sequence) {
+    prefix = sequence.prefix || prefix;
+    padding = Number(sequence.padding || padding);
+    value = Math.max(value, Number(sequence.value));
+  }
+
+  const nextValue = value + 1;
+  return `${prefix}${String(nextValue).padStart(padding, '0')}`;
+};
+
+
 export const isDuplicateAdmissionNumberError = (error) => {
   if (!error || error.code !== 11000) {
     return false;

@@ -21,7 +21,7 @@ import {
   StudentFeeConcession
 } from '../models/index.js';
 import { createStudentWithGeneratedAdmissionNumber } from '../services/studentAdmissionService.js';
-import { isDuplicateAdmissionNumberError } from '../services/admissionNumberService.js';
+import { isDuplicateAdmissionNumberError, peekNextAdmissionNumber } from '../services/admissionNumberService.js';
 
 export const assignClassDefaultFeesToStudent = async (student, session = null) => {
   try {
@@ -1586,12 +1586,20 @@ export const promoteStudents = async (req, res) => {
       return res.status(400).json({ error: 'fromAcademicYear, toAcademicYear, and classMapping are required.' });
     }
 
-    const fromYearDoc = await AcademicYear.findOne({ year: fromAcademicYear });
+    const fromYearHyphen = String(fromAcademicYear).replace(/[\u2013]/g, '-');
+    const fromYearEnDash = String(fromAcademicYear).replace(/-/g, '–');
+    const fromYearDoc = await AcademicYear.findOne({
+      year: { $in: [fromAcademicYear, fromYearHyphen, fromYearEnDash] }
+    });
     if (!fromYearDoc) {
       return res.status(400).json({ error: `Please create Academic Year ${fromAcademicYear} before promoting students.` });
     }
 
-    const toYearDoc = await AcademicYear.findOne({ year: toAcademicYear });
+    const toYearHyphen = String(toAcademicYear).replace(/[\u2013]/g, '-');
+    const toYearEnDash = String(toAcademicYear).replace(/-/g, '–');
+    const toYearDoc = await AcademicYear.findOne({
+      year: { $in: [toAcademicYear, toYearHyphen, toYearEnDash] }
+    });
     if (!toYearDoc) {
       return res.status(400).json({ error: `Please create Academic Year ${toAcademicYear} before promoting students.` });
     }
@@ -1599,6 +1607,8 @@ export const promoteStudents = async (req, res) => {
     const students = await Student.find({
       $or: [
         { academicYear: fromAcademicYear },
+        { academicYear: fromYearHyphen },
+        { academicYear: fromYearEnDash },
         { academicYear: { $exists: false } },
         { academicYear: null },
         { academicYear: '' }
@@ -1618,70 +1628,78 @@ export const promoteStudents = async (req, res) => {
     let graduatedCount = 0;
 
     for (const student of students) {
-      const nextClass = classMapping[student.currentClass];
+      try {
+        const nextClass = classMapping[student.currentClass];
 
-      if (nextClass) {
-        if (nextClass === 'Graduated') {
-          student.studentStatus = 'Graduated';
-          await student.save();
+        if (nextClass) {
+          if (nextClass === 'Graduated') {
+            student.studentStatus = 'Graduated';
+            await student.save();
 
-          await StudentEnrollment.updateMany(
-            { studentId: student._id, academicYear: fromAcademicYear, status: 'Active' },
-            { $set: { status: 'Graduated', promotedDate: new Date() } }
+            await StudentEnrollment.updateMany(
+              { studentId: student._id, academicYear: { $in: [fromAcademicYear, fromYearHyphen, fromYearEnDash] }, status: 'Active' },
+              { $set: { status: 'Graduated', promotedDate: new Date() } }
+            );
+
+            graduatedCount++;
+            continue;
+          }
+
+          const oldClassName = student.currentClass;
+          const oldAcademicYear = student.academicYear || fromAcademicYear;
+
+          // 1. Tag existing unpaid fees as legacy (belonging to old class/year)
+          await StudentFee.updateMany(
+            { studentId: student._id, remainingAmount: { $gt: 0 } },
+            {
+              $set: {
+                className: oldClassName,
+                academicYear: oldAcademicYear
+              }
+            }
           );
 
-          graduatedCount++;
-          continue;
+          // 2. Mark fully paid fees with old class info too (for record keeping)
+          await StudentFee.updateMany(
+            { studentId: student._id, remainingAmount: { $eq: 0 }, className: { $exists: false } },
+            {
+              $set: {
+                className: oldClassName,
+                academicYear: oldAcademicYear
+              }
+            }
+          );
+
+          // 3. Update student to new class
+          student.currentClass = nextClass;
+          student.academicYear = toYearDoc.year; // Use the exact year name stored in DB (e.g. en-dash version)
+          await student.save();
+
+          // 4. Update previous enrollment record to Promoted
+          await StudentEnrollment.updateMany(
+            { studentId: student._id, academicYear: { $in: [fromAcademicYear, fromYearHyphen, fromYearEnDash] }, status: 'Active' },
+            { $set: { status: 'Promoted', promotedDate: new Date() } }
+          );
+
+          // 5. Create/update enrollment record for next academic year using findOneAndUpdate to prevent duplicate key errors
+          await StudentEnrollment.findOneAndUpdate(
+            { studentId: student._id, academicYearId: toYearDoc._id },
+            {
+              $set: {
+                academicYear: toYearDoc.year,
+                className: nextClass,
+                sectionName: student.section || '',
+                status: 'Active',
+                joinedDate: new Date()
+              }
+            },
+            { upsert: true }
+          );
+
+          promotedCount++;
         }
-
-        const oldClassName = student.currentClass;
-        const oldAcademicYear = student.academicYear || fromAcademicYear;
-
-        // 1. Tag existing unpaid fees as legacy (belonging to old class/year)
-        await StudentFee.updateMany(
-          { studentId: student._id, remainingAmount: { $gt: 0 } },
-          {
-            $set: {
-              className: oldClassName,
-              academicYear: oldAcademicYear
-            }
-          }
-        );
-
-        // 2. Mark fully paid fees with old class info too (for record keeping)
-        await StudentFee.updateMany(
-          { studentId: student._id, remainingAmount: { $eq: 0 }, className: { $exists: false } },
-          {
-            $set: {
-              className: oldClassName,
-              academicYear: oldAcademicYear
-            }
-          }
-        );
-
-        // 3. Update student to new class
-        student.currentClass = nextClass;
-        student.academicYear = toAcademicYear;
-        await student.save();
-
-        // 4. Update previous enrollment record to Promoted
-        await StudentEnrollment.updateMany(
-          { studentId: student._id, academicYear: fromAcademicYear, status: 'Active' },
-          { $set: { status: 'Promoted', promotedDate: new Date() } }
-        );
-
-        // 5. Create new enrollment record for next academic year
-        await StudentEnrollment.create({
-          studentId: student._id,
-          academicYearId: toYearDoc._id,
-          academicYear: toAcademicYear,
-          className: nextClass,
-          sectionName: student.section || '',
-          status: 'Active',
-          joinedDate: new Date()
-        });
-
-        promotedCount++;
+      } catch (studentError) {
+        console.error(`Error promoting student ${student.studentName || 'Unknown'} (${student._id}):`, studentError);
       }
     }
 
@@ -1700,3 +1718,14 @@ export const promoteStudents = async (req, res) => {
     res.status(500).json({ error: 'Failed to promote students' });
   }
 };
+
+export const getNextAdmissionNumber = async (req, res) => {
+  try {
+    const admissionNumber = await peekNextAdmissionNumber();
+    res.json({ admissionNumber });
+  } catch (error) {
+    console.error('Error getting next admission number:', error);
+    res.status(500).json({ error: 'Failed to get next admission number' });
+  }
+};
+

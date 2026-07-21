@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import multer from 'multer';
-import { getStudents, getStudentById, addStudentManually, bulkImportStudents, deleteStudent, removeFeeFromStudent, updateStudent, promoteStudents } from '../controllers/studentController.js';
+import { getStudents, getStudentById, addStudentManually, bulkImportStudents, deleteStudent, removeFeeFromStudent, updateStudent, promoteStudents, getNextAdmissionNumber } from '../controllers/studentController.js';
 import { authenticate } from '../middlewares/authMiddleware.js';
 
 const router = Router();
@@ -10,6 +10,7 @@ const upload = multer({ storage: multer.memoryStorage() });
 router.use(authenticate);
 
 router.get('/', getStudents);
+router.get('/next-admission-number', getNextAdmissionNumber);
 router.post('/promote', promoteStudents);
 router.post('/manual', addStudentManually);
 router.post('/bulk-import', upload.single('file'), bulkImportStudents);
