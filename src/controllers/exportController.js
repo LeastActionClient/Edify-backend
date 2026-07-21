@@ -45,7 +45,7 @@ const adjustFeesWithActiveConcessions = async (studentFees) => {
 export const exportStudents = async (req, res) => {
   try {
     const {
-      exportScope, // 'SELECTED', 'SINGLE', 'CLASS', 'SECTION', 'ACADEMIC_YEAR', 'OLD_STUDENTS'
+      exportScope, // 'SELECTED', 'SINGLE', 'FILTERED', 'CLASS', 'SECTION', 'ACADEMIC_YEAR', 'OLD_STUDENTS'
       exportType, // 'PDF', 'Excel'
       studentIds, // Array of selected student IDs
       classFilter,
@@ -61,7 +61,7 @@ export const exportStudents = async (req, res) => {
     let query = {};
 
     // Base query based on scope
-    if (exportScope === 'SINGLE' || exportScope === 'SELECTED') {
+    if (exportScope === 'SINGLE' || exportScope === 'SELECTED' || exportScope === 'FILTERED') {
       if (!studentIds || studentIds.length === 0) {
         return res.status(400).json({ error: 'No students selected for export.' });
       }
@@ -69,6 +69,9 @@ export const exportStudents = async (req, res) => {
     } else if (exportScope === 'CLASS') {
       if (!classFilter) return res.status(400).json({ error: 'Class is required.' });
       query.currentClass = classFilter;
+      if (sectionFilter && sectionFilter !== 'All') {
+        query.section = sectionFilter;
+      }
       query.studentStatus = { $in: ['Active', null, ''] };
     } else if (exportScope === 'SECTION') {
       if (!classFilter || !sectionFilter) return res.status(400).json({ error: 'Class and section are required.' });
@@ -86,7 +89,7 @@ export const exportStudents = async (req, res) => {
     }
 
     // Apply additional filters
-    if (exitType && exitType !== 'All') {
+    if (exportScope === 'OLD_STUDENTS' && exitType && exitType !== 'All') {
       query.studentStatus = exitType;
     }
 
@@ -153,20 +156,14 @@ export const exportStudents = async (req, res) => {
       student.includedCharges = chargeMap[student._id] || [];
       student.activities = activityMap[student._id] || [];
 
-      // Calculate pending
-      const fullFee = student.fees.find(f => f.feeCategoryId?.name?.toLowerCase().includes('full'));
-      const totalPaid = student.fees.reduce((sum, f) => sum + f.paidAmount, 0);
-      let totalPending = 0;
-      if (fullFee) {
-        totalPending = Math.max(0, fullFee.totalAmount - totalPaid);
-      } else {
-        totalPending = student.fees.reduce((sum, f) => sum + f.remainingAmount, 0);
-      }
+      // Calculate pending — same logic as Students page frontend
+      const totalPending = student.fees.reduce((sum, f) => sum + (f.remainingAmount || 0), 0);
+      const hasFees = student.fees.length > 0;
       student.totalPending = totalPending;
 
       let keep = true;
       if (feeStatus === 'Pending' && totalPending <= 0) keep = false;
-      if (feeStatus === 'Paid' && totalPending > 0) keep = false;
+      if (feeStatus === 'Paid' && (!hasFees || totalPending > 0)) keep = false;
       
       if (keep) finalStudents.push(student);
     }
