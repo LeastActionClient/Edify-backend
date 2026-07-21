@@ -20,6 +20,7 @@ const studentFeeConcessionSchema = new mongoose.Schema({
 
 // Index for performance and fast lookups
 studentFeeConcessionSchema.index({ studentId: 1, feeCategoryId: 1, status: 1 });
+studentFeeConcessionSchema.index({ studentFeeId: 1, status: 1 });
 studentFeeConcessionSchema.index({ academicYear: 1, className: 1, section: 1 });
 
 export default mongoose.model('StudentFeeConcession', studentFeeConcessionSchema);

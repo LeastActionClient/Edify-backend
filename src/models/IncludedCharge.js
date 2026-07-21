@@ -11,4 +11,7 @@ const includedChargeSchema = new mongoose.Schema({
   createdById: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });
 
+includedChargeSchema.index({ status: 1, createdAt: -1 });
+includedChargeSchema.index({ createdById: 1, createdAt: -1 });
+
 export default mongoose.model('IncludedCharge', includedChargeSchema);

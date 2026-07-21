@@ -7,5 +7,6 @@ const sectionSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 sectionSchema.index({ name: 1, classId: 1 }, { unique: true });
+sectionSchema.index({ classId: 1 });
 
 export default mongoose.model('Section', sectionSchema);

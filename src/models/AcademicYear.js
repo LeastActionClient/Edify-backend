@@ -5,4 +5,6 @@ const academicYearSchema = new mongoose.Schema({
   status: { type: String, required: true, enum: ['Active', 'Completed'], default: 'Active' }
 }, { timestamps: true });
 
+academicYearSchema.index({ status: 1, year: -1 });
+
 export default mongoose.model('AcademicYear', academicYearSchema);

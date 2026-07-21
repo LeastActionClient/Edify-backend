@@ -8,6 +8,7 @@ const generateInvoiceNumber = async () => {
   const currentYear = new Date().getFullYear();
   // Find the invoice with the highest number for the current year
   const lastInvoice = await Invoice.findOne({ invoiceNumber: new RegExp(`^INV-${currentYear}-`) })
+    .select('invoiceNumber')
     .sort({ invoiceNumber: -1 });
 
   let nextCount = 1;
@@ -350,33 +351,36 @@ const drawReceiptCopy = ({
 };
 
 const getInvoicePaymentData = async (id) => {
-  const paymentDoc = await Payment.findById(id)
-    .populate('studentId')
-    .populate('applicationId')
-    .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId' } })
-    .populate({ path: 'feeAllocations.studentFeeId', populate: { path: 'feeCategoryId' } })
-    .populate('recordedById', 'username');
+  const [paymentDoc, invoiceDoc] = await Promise.all([
+    Payment.findById(id)
+      .populate('studentId', 'studentName admissionNumber currentClass section academicYear studentStatus fatherPhone motherPhone whatsappNumber emisNo emisNumber guardianName guardian')
+      .populate('applicationId', 'studentName applicationId applyingClass status feePaid feeAmount feePaidDate')
+      .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock' } })
+      .populate({ path: 'feeAllocations.studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock' } })
+      .populate('recordedById', 'username')
+      .lean(),
+    Invoice.findOne({ paymentId: id }).select('invoiceNumber paymentId studentId generatedDate createdAt updatedAt').lean()
+  ]);
 
   if (!paymentDoc) {
     return null;
   }
 
-  let invoiceDoc = await Invoice.findOne({ paymentId: id });
+  let invoice = invoiceDoc;
 
-  if (!invoiceDoc && paymentDoc.paymentType === 'APPLICATION') {
-    invoiceDoc = {
+  if (!invoice && paymentDoc.paymentType === 'APPLICATION') {
+    invoice = {
       invoiceNumber: `INV-APP-${paymentDoc.applicationId?.applicationId || paymentDoc._id.toString().slice(-5).toUpperCase()}`,
       paymentId: paymentDoc._id,
       generatedDate: paymentDoc.paymentDate || paymentDoc.createdAt
     };
   }
 
-  if (!invoiceDoc) {
+  if (!invoice) {
     return null;
   }
 
-  const payment = paymentDoc.toObject();
-  const invoice = typeof invoiceDoc.toObject === 'function' ? invoiceDoc.toObject() : invoiceDoc;
+  const payment = paymentDoc;
 
   payment.invoice = invoice;
 
@@ -391,7 +395,9 @@ const getInvoicePaymentData = async (id) => {
   // Load and apply concessions dynamically to match discountAmount in PDF / invoice details
   const studentIdForConcessions = payment.studentId?._id || payment.studentId;
   const concessions = studentIdForConcessions 
-    ? await StudentFeeConcession.find({ studentId: studentIdForConcessions, status: { $in: ['Active', 'Inactive'] } }).lean()
+    ? await StudentFeeConcession.find({ studentId: studentIdForConcessions, status: { $in: ['Active', 'Inactive'] } })
+      .select('studentFeeId lessAmount status')
+      .lean()
     : [];
   const concessionMap = new Map(concessions.map(c => [c.studentFeeId.toString(), c]));
 
@@ -455,7 +461,7 @@ const getInvoicePaymentData = async (id) => {
     });
   } else if (payment.isFullPayment) {
     const studentId = payment.studentId?._id || payment.studentId;
-    const allFees = await StudentFee.find({ studentId });
+    const allFees = await StudentFee.find({ studentId }).select('totalAmount remainingAmount').lean();
     fullTotalAmount = allFees.reduce((sum, fee) => sum + fee.totalAmount, 0);
     fullRemainingBalance = allFees.reduce((sum, fee) => sum + fee.remainingAmount, 0);
   }
@@ -733,30 +739,36 @@ export const createPayment = async (req, res) => {
 export const getPaymentHistory = async (req, res) => {
   try {
     const payments = await Payment.find()
-      .populate('studentId', 'studentName admissionNumber currentClass section')
-      .populate('applicationId', 'studentName applicationId applyingClass')
-      .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId' } })
-      .populate({ path: 'feeAllocations.studentFeeId', populate: { path: 'feeCategoryId' } })
+      .populate('studentId', 'studentName admissionNumber currentClass section academicYear studentStatus')
+      .populate('applicationId', 'studentName applicationId applyingClass status')
+      .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock' } })
+      .populate({ path: 'feeAllocations.studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock' } })
       .populate('recordedById', 'username')
-      .sort({ paymentDate: -1 });
+      .sort({ paymentDate: -1 })
+      .lean();
 
     const paymentIds = payments.map(p => p._id);
-    const invoices = await Invoice.find({ paymentId: { $in: paymentIds } });
+    const studentIds = payments.map(p => p.studentId?._id).filter(Boolean);
+    const [invoices, concessions] = await Promise.all([
+      Invoice.find({ paymentId: { $in: paymentIds } })
+        .select('invoiceNumber paymentId studentId generatedDate createdAt updatedAt')
+        .lean(),
+      StudentFeeConcession.find({
+        studentId: { $in: studentIds },
+        status: { $in: ['Active', 'Inactive'] }
+      })
+        .select('studentFeeId lessAmount status')
+        .lean()
+    ]);
     const invoiceMap = {};
     invoices.forEach(inv => {
       invoiceMap[inv.paymentId.toString()] = inv;
     });
 
-    const studentIds = payments.map(p => p.studentId?._id).filter(Boolean);
-    const concessions = await StudentFeeConcession.find({
-      studentId: { $in: studentIds },
-      status: { $in: ['Active', 'Inactive'] }
-    }).lean();
-
     const concessionMap = new Map(concessions.map(c => [c.studentFeeId.toString(), c]));
 
     const paymentsWithInvoices = payments.map(p => {
-      const pObj = p.toObject();
+      const pObj = { ...p };
       pObj.invoice = invoiceMap[p._id.toString()] || null;
       if (pObj.studentId) {
         pObj.student = pObj.studentId;

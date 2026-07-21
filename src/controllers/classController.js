@@ -2,21 +2,30 @@ import { Class, Section, Student, ActivityLog } from '../models/index.js';
 
 export const getClasses = async (req, res) => {
   try {
-    const classes = await Class.find().sort({ name: 1 });
-    const classIds = classes.map(c => c._id);
-    const sections = await Section.find({ classId: { $in: classIds } });
+    const classes = await Class.find()
+      .select('name defaultFees createdAt updatedAt')
+      .sort({ name: 1 })
+      .lean();
+
+    const classIds = classes.map((c) => c._id);
+    const sections = classIds.length > 0
+      ? await Section.find({ classId: { $in: classIds } })
+        .select('name classId defaultFees createdAt updatedAt')
+        .sort({ name: 1 })
+        .lean()
+      : [];
+
     const sectionsByClass = {};
     sections.forEach(s => {
       const key = s.classId.toString();
       if (!sectionsByClass[key]) sectionsByClass[key] = [];
       sectionsByClass[key].push(s);
     });
-    const result = classes.map(c => {
-      const obj = c.toObject();
-      obj.sections = sectionsByClass[c._id.toString()] || [];
-      return obj;
-    });
-    res.json(result);
+
+    res.json(classes.map((c) => ({
+      ...c,
+      sections: sectionsByClass[c._id.toString()] || []
+    })));
   } catch (error) {
     res.status(500).json({ error: 'Error fetching classes' });
   }

@@ -4,7 +4,9 @@ export const getActivities = async (req, res) => {
   try {
     const activities = await Activity.find()
       .populate('createdById', 'username')
-      .sort({ createdAt: -1 });
+      .select('name description amount status createdById createdAt updatedAt')
+      .sort({ createdAt: -1 })
+      .lean();
     res.json(activities);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch activities' });

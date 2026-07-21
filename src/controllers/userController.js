@@ -56,14 +56,29 @@ export const updateAdmin = async (req, res) => {
 
 export const getAdmins = async (req, res) => {
   try {
-    const admins = await User.find({}, 'id username role isActive createdAt lastActivity');
+    const admins = await User.find({}, 'id username role isActive createdAt lastActivity').lean();
+    const adminIds = admins.map((admin) => admin._id);
+    const loginLogs = adminIds.length > 0
+      ? await ActivityLog.find({
+        userId: { $in: adminIds },
+        action: 'LOGGED_IN'
+      })
+        .select('userId timestamp')
+        .sort({ timestamp: -1 })
+        .lean()
+      : [];
 
-    const adminsWithLogin = await Promise.all(admins.map(async (admin) => {
-      const lastLoginLog = await ActivityLog.findOne({ userId: admin.id, action: 'LOGGED_IN' }).sort({ timestamp: -1 });
-      return {
-        ...admin.toObject(),
-        lastLogin: lastLoginLog ? lastLoginLog.timestamp : null
-      };
+    const lastLoginByUser = new Map();
+    loginLogs.forEach((log) => {
+      const key = log.userId.toString();
+      if (!lastLoginByUser.has(key)) {
+        lastLoginByUser.set(key, log.timestamp);
+      }
+    });
+
+    const adminsWithLogin = admins.map((admin) => ({
+      ...admin,
+      lastLogin: lastLoginByUser.get(admin._id.toString()) || null
     }));
 
     res.json(adminsWithLogin);
@@ -74,7 +89,11 @@ export const getAdmins = async (req, res) => {
 
 export const getActivityLogs = async (req, res) => {
   try {
-    const logs = await ActivityLog.find().populate('userId', 'username').sort({ timestamp: -1 });
+    const logs = await ActivityLog.find()
+      .select('userId action details timestamp')
+      .populate('userId', 'username')
+      .sort({ timestamp: -1 })
+      .lean();
     res.json(logs);
   } catch (error) {
     res.status(500).json({ error: 'Error fetching activity logs' });

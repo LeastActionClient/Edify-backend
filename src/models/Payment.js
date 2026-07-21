@@ -21,4 +21,11 @@ const paymentSchema = new mongoose.Schema({
   recordedById: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });
 
+paymentSchema.index({ studentId: 1, paymentDate: -1 });
+paymentSchema.index({ paymentDate: -1 });
+paymentSchema.index({ applicationId: 1 });
+paymentSchema.index({ recordedById: 1, paymentDate: -1 });
+paymentSchema.index({ 'feeAllocations.studentFeeId': 1 });
+paymentSchema.index({ paymentType: 1, paymentDate: -1 });
+
 export default mongoose.model('Payment', paymentSchema);

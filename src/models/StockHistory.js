@@ -12,4 +12,7 @@ const stockHistorySchema = new mongoose.Schema({
   updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });
 
+stockHistorySchema.index({ categoryId: 1, createdAt: -1 });
+stockHistorySchema.index({ referenceType: 1, referenceId: 1 });
+
 export default mongoose.model('StockHistory', stockHistorySchema);

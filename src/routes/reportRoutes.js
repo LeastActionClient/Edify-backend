@@ -1,11 +1,12 @@
 import { Router } from 'express';
-import { getDailyCollection, getWeeklyCollection, getMonthlyCollection, getYearlyCollection, getPendingFees, getStudentFeeReport, getCategoryWiseCollection, getCustomCollection } from '../controllers/reportController.js';
+import { getDashboardOverview, getDailyCollection, getWeeklyCollection, getMonthlyCollection, getYearlyCollection, getPendingFees, getStudentFeeReport, getCategoryWiseCollection, getCustomCollection } from '../controllers/reportController.js';
 import { authenticate } from '../middlewares/authMiddleware.js';
 
 const router = Router();
 
 router.use(authenticate);
 
+router.get('/overview', getDashboardOverview);
 router.get('/daily-collection', getDailyCollection);
 router.get('/weekly-collection', getWeeklyCollection);
 router.get('/monthly-collection', getMonthlyCollection);

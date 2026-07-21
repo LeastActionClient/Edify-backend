@@ -24,4 +24,8 @@ const applicationSchema = new mongoose.Schema({
   approvedAt: { type: Date }
 }, { timestamps: true });
 
+applicationSchema.index({ status: 1, applicationDate: -1 });
+applicationSchema.index({ feePaid: 1, feePaidDate: -1 });
+applicationSchema.index({ applyingClass: 1, status: 1 });
+
 export default mongoose.model('Application', applicationSchema);

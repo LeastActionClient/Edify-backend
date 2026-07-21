@@ -44,4 +44,8 @@ const studentSchema = new mongoose.Schema({
   RTE: { type: String }
 }, { timestamps: true });
 
+studentSchema.index({ currentClass: 1, section: 1 });
+studentSchema.index({ academicYear: 1, studentStatus: 1 });
+studentSchema.index({ createdAt: -1 });
+
 export default mongoose.model('Student', studentSchema);

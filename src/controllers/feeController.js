@@ -26,7 +26,10 @@ const recalculateStudentTotals = async (studentId) => {
 
 export const getFeeCategories = async (req, res) => {
   try {
-    const categories = await FeeCategory.find().sort({ name: 1 });
+    const categories = await FeeCategory.find()
+      .select('name isEnabled mandatory isStockItem currentStock createdAt updatedAt')
+      .sort({ name: 1 })
+      .lean();
     res.json(categories);
   } catch (error) {
     res.status(500).json({ error: 'Error fetching fee categories' });

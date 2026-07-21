@@ -16,6 +16,9 @@ const studentFeeSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 studentFeeSchema.index({ studentId: 1, feeCategoryId: 1, className: 1 }, { unique: true });
+studentFeeSchema.index({ studentId: 1, academicYear: 1 });
+studentFeeSchema.index({ studentId: 1, className: 1 });
+studentFeeSchema.index({ feeCategoryId: 1, className: 1 });
 
 export default mongoose.model('StudentFee', studentFeeSchema);
 

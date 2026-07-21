@@ -7,4 +7,7 @@ const invoiceSchema = new mongoose.Schema({
   generatedDate: { type: Date, default: Date.now }
 }, { timestamps: true });
 
+invoiceSchema.index({ studentId: 1, generatedDate: -1 });
+invoiceSchema.index({ paymentId: 1, generatedDate: -1 });
+
 export default mongoose.model('Invoice', invoiceSchema);

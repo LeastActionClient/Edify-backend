@@ -6,5 +6,6 @@ const studentActivitySchema = new mongoose.Schema({
 }, { timestamps: true });
 
 studentActivitySchema.index({ studentId: 1, activityId: 1 }, { unique: true });
+studentActivitySchema.index({ studentId: 1 });
 
 export default mongoose.model('StudentActivity', studentActivitySchema);

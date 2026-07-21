@@ -103,19 +103,24 @@ export const assignClassDefaultFeesToStudent = async (student, session = null) =
 export const getStudents = async (req, res) => {
   try {
     const students = await Student.find()
+      .select('-siblings')
       .populate('addedById', 'username')
       .sort({ createdAt: -1 })
       .lean();
 
     const studentIds = students.map(s => s._id);
-    const studentFees = await StudentFee.find({ studentId: { $in: studentIds } })
-      .populate('feeCategoryId')
-      .lean();
-
-    const concessions = await StudentFeeConcession.find({
-      studentId: { $in: studentIds },
-      status: { $in: ['Active', 'Inactive'] }
-    }).lean();
+    const [studentFees, concessions] = await Promise.all([
+      StudentFee.find({ studentId: { $in: studentIds } })
+        .select('studentId feeCategoryId totalAmount paidAmount remainingAmount academicYear className uniformDetails isStockDeducted createdAt updatedAt')
+        .populate('feeCategoryId', 'name amount mandatory pricing isStockItem currentStock')
+        .lean(),
+      StudentFeeConcession.find({
+        studentId: { $in: studentIds },
+        status: { $in: ['Active', 'Inactive'] }
+      })
+        .select('studentId studentFeeId lessAmount status')
+        .lean()
+    ]);
 
     const concessionMap = new Map();
     concessions.forEach(c => {
@@ -172,6 +177,7 @@ export const getStudentById = async (req, res) => {
   try {
     const { id } = req.params;
     const student = await Student.findById(id)
+      .select('-siblings')
       .populate('addedById', 'username')
       .lean();
 
@@ -180,8 +186,31 @@ export const getStudentById = async (req, res) => {
       return;
     }
 
-    const studentFeesRaw = await StudentFee.find({ studentId: id })
-      .populate('feeCategoryId');
+    const [studentFeesRaw, concessions, payments, includedCharges, activities] = await Promise.all([
+      StudentFee.find({ studentId: id })
+        .select('studentId feeCategoryId totalAmount paidAmount remainingAmount academicYear className uniformDetails isStockDeducted createdAt updatedAt')
+        .populate('feeCategoryId', 'name amount mandatory pricing isStockItem currentStock')
+        .lean(),
+      StudentFeeConcession.find({
+        studentId: id,
+        status: { $in: ['Active', 'Inactive'] }
+      })
+        .select('studentId studentFeeId lessAmount status')
+        .lean(),
+      Payment.find({ studentId: id })
+        .select('studentId applicationId paymentType studentFeeId isFullPayment feeAllocations amount paymentDate paymentMethod referenceNumber remarks status inventoryProcessed recordedById createdAt updatedAt')
+        .sort({ paymentDate: -1 })
+        .lean(),
+      StudentIncludedCharge.find({ studentId: id })
+        .populate('includedChargeId', 'name amount description stockQuantity stockUnit status')
+        .lean(),
+      StudentActivity.find({ studentId: id })
+        .populate('activityId', 'name amount description status')
+        .lean()
+    ]);
+
+    const classDocCache = new Map();
+    const sectionDocCache = new Map();
 
     for (const f of studentFeesRaw) {
       if ((f.totalAmount === 0 || f.remainingAmount === 0) && (f.paidAmount || 0) === 0 && f.feeCategoryId) {
@@ -195,10 +224,21 @@ export const getStudentById = async (req, res) => {
           healedAmt = (topLen * topPrice) + (bottomLen * bottomPrice);
         }
         if (healedAmt <= 0) {
-          const classDoc = await Class.findOne({ name: f.className || student.currentClass }).lean();
+          const classKey = f.className || student.currentClass;
+          let classDoc = classDocCache.get(classKey);
+          if (classDoc === undefined) {
+            classDoc = await Class.findOne({ name: classKey }).lean();
+            classDocCache.set(classKey, classDoc);
+          }
+
           let sectionDoc = null;
           if (classDoc && student.section) {
-            sectionDoc = await Section.findOne({ name: student.section, classId: classDoc._id }).lean();
+            const sectionKey = `${classKey}::${student.section}`;
+            sectionDoc = sectionDocCache.get(sectionKey);
+            if (sectionDoc === undefined) {
+              sectionDoc = await Section.findOne({ name: student.section, classId: classDoc._id }).lean();
+              sectionDocCache.set(sectionKey, sectionDoc);
+            }
           }
           const mergedDefaultFees = { ...(classDoc?.defaultFees || {}), ...(sectionDoc?.defaultFees || {}) };
           const feeConfig = mergedDefaultFees[cat._id.toString()];
@@ -225,18 +265,13 @@ export const getStudentById = async (req, res) => {
       }
     }
 
-    const concessions = await StudentFeeConcession.find({
-      studentId: id,
-      status: { $in: ['Active', 'Inactive'] }
-    }).lean();
-
     const concessionMap = new Map();
     concessions.forEach(c => {
       concessionMap.set(c.studentFeeId.toString(), c);
     });
 
     const studentFees = studentFeesRaw.map(fee => {
-      const fObj = fee.toObject ? fee.toObject() : fee;
+      const fObj = { ...fee };
       const concession = concessionMap.get(fObj._id.toString());
       fObj.feeCategory = fObj.feeCategoryId;
       
@@ -261,18 +296,6 @@ export const getStudentById = async (req, res) => {
     const previousClassFees = studentFees.filter(f =>
       f.className && f.className !== student.currentClass
     );
-
-    const payments = await Payment.find({ studentId: id })
-      .sort({ paymentDate: -1 })
-      .lean();
-
-    const includedCharges = await StudentIncludedCharge.find({ studentId: id })
-      .populate('includedChargeId')
-      .lean();
-
-    const activities = await StudentActivity.find({ studentId: id })
-      .populate('activityId')
-      .lean();
 
     res.json({ ...student, studentFees, currentClassFees, previousClassFees, payments, includedCharges, activities });
   } catch (error) {

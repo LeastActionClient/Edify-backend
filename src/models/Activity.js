@@ -8,4 +8,6 @@ const activitySchema = new mongoose.Schema({
   createdById: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });
 
+activitySchema.index({ status: 1, createdAt: -1 });
+
 export default mongoose.model('Activity', activitySchema);

@@ -6,5 +6,6 @@ const studentIncludedChargeSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 studentIncludedChargeSchema.index({ studentId: 1, includedChargeId: 1 }, { unique: true });
+studentIncludedChargeSchema.index({ studentId: 1 });
 
 export default mongoose.model('StudentIncludedCharge', studentIncludedChargeSchema);

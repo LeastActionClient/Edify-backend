@@ -30,7 +30,9 @@ export const getIncludedCharges = async (req, res) => {
   try {
     const charges = await IncludedCharge.find()
       .populate('createdById', 'username')
-      .sort({ createdAt: -1 });
+      .select('name description amount stockQuantity lowStockThreshold stockUnit status createdById createdAt updatedAt')
+      .sort({ createdAt: -1 })
+      .lean();
     res.json(charges);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch included charges' });
@@ -162,7 +164,9 @@ export const getIncludedChargeStockTransactions = async (req, res) => {
     const { id } = req.params;
     const transactions = await IncludedChargeStockTransaction.find({ includedChargeId: id })
       .populate('performedById', 'username')
-      .sort({ createdAt: -1 });
+      .select('includedChargeId type quantity previousStock newStock reason referenceType referenceId performedById createdAt updatedAt')
+      .sort({ createdAt: -1 })
+      .lean();
     res.json(transactions);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch stock transactions' });

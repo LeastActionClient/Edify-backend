@@ -8,4 +8,7 @@ const userSchema = new mongoose.Schema({
   lastActivity: { type: Date, default: Date.now }
 }, { timestamps: true });
 
+userSchema.index({ role: 1, isActive: 1 });
+userSchema.index({ lastActivity: -1 });
+
 export default mongoose.model('User', userSchema);

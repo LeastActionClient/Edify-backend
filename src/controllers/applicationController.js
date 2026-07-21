@@ -157,8 +157,10 @@ export const toggleFeeStatus = async (req, res) => {
 export const getApplications = async (req, res) => {
   try {
     const applications = await Application.find()
+      .select('applicationId adminNo studentName parentName fatherName motherName fatherPhone motherPhone address applyingClass previousSchool applicationDate status feePaid feeAmount feePaidDate processedById student approvedBy approvedAt createdAt updatedAt')
       .populate('processedById', 'username')
-      .sort({ applicationDate: -1 });
+      .sort({ applicationDate: -1 })
+      .lean();
     res.json(applications);
   } catch (error) {
     res.status(500).json({ error: 'Error fetching applications' });
@@ -168,7 +170,10 @@ export const getApplications = async (req, res) => {
 export const getApplicationById = async (req, res) => {
   try {
     const { id } = req.params;
-    const application = await Application.findById(id).populate('processedById', 'username');
+    const application = await Application.findById(id)
+      .select('applicationId adminNo studentName parentName fatherName motherName fatherPhone motherPhone address applyingClass previousSchool applicationDate status feePaid feeAmount feePaidDate siblings processedById student approvedBy approvedAt createdAt updatedAt')
+      .populate('processedById', 'username')
+      .lean();
     if (!application) {
       return res.status(404).json({ error: 'Application not found' });
     }

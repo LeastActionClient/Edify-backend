@@ -13,4 +13,8 @@ const studentEnrollmentSchema = new mongoose.Schema({
   promotedDate: { type: Date }
 }, { timestamps: true });
 
+studentEnrollmentSchema.index({ studentId: 1, academicYearId: 1 }, { unique: true });
+studentEnrollmentSchema.index({ studentId: 1, status: 1 });
+studentEnrollmentSchema.index({ academicYear: 1, status: 1 });
+
 export default mongoose.model('StudentEnrollment', studentEnrollmentSchema);

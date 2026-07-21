@@ -16,7 +16,10 @@ const validateYearFormat = (year) => {
 
 export const getAcademicYears = async (req, res) => {
   try {
-    const years = await AcademicYear.find().sort({ year: -1 });
+    const years = await AcademicYear.find()
+      .select('year status createdAt updatedAt')
+      .sort({ year: -1 })
+      .lean();
     res.json(years);
   } catch (error) {
     console.error('Error fetching academic years:', error);
@@ -26,7 +29,9 @@ export const getAcademicYears = async (req, res) => {
 
 export const getActiveAcademicYear = async (req, res) => {
   try {
-    const activeYear = await AcademicYear.findOne({ status: 'Active' });
+    const activeYear = await AcademicYear.findOne({ status: 'Active' })
+      .select('year status createdAt updatedAt')
+      .lean();
     if (!activeYear) {
       return res.status(404).json({ error: 'No active academic year found' });
     }
@@ -115,8 +120,10 @@ export const getStudentAcademicHistory = async (req, res) => {
   try {
     const { studentId } = req.params;
     const enrollments = await StudentEnrollment.find({ studentId })
-      .populate('academicYearId')
-      .sort({ createdAt: 1 });
+      .populate('academicYearId', 'year status')
+      .select('studentId academicYearId academicYear classId className sectionId sectionName status joinedDate promotedDate createdAt updatedAt')
+      .sort({ createdAt: 1 })
+      .lean();
     res.json(enrollments);
   } catch (error) {
     console.error('Error fetching student academic history:', error);
