@@ -193,32 +193,45 @@ export const exportStudents = async (req, res) => {
         return date.toISOString().split('T')[0];
       };
 
-      const exportRows = finalStudents.map(student => ({
-        'Student Name': student.studentName || '',
-        'Admission No': student.admissionNumber || '',
-        'EMIS No': student.emisNo || student.emisNumber || '',
-        'DOB': formatDateToYYYYMMDD(student.dateOfBirth),
-        'Gender / Sex': student.gender || '',
-        'Blood Group': student.bloodGroup || '',
-        'Aadhar No': student.aadhaarNumber || '',
-        'Religion': student.religion || '',
-        'Community': student.community || '',
-        'Caste': student.caste || '',
-        'RTE': student.RTE || '',
-        'Nationality': student.nationality || '',
-        'Father Name': student.fatherName || '',
-        'Father Phone': student.fatherPhone || '',
-        'Father Occupation': student.fatherOccupation || '',
-        'Mother Name': student.motherName || '',
-        'Mother Phone': student.motherPhone || '',
-        'Mother Occupation': student.motherOccupation || '',
-        'Guardian Name': student.guardianName || student.guardian || '',
-        'Whatsapp Number': student.whatsappNumber || '',
-        'Address': student.address || '',
-        'City': student.city || '',
-        'State': student.state || '',
-        'Pincode': student.pincode || ''
-      }));
+      const exportRows = finalStudents.map(student => {
+        const totalFee = student.fees.reduce((sum, f) => sum + (f.totalAmount || 0), 0);
+        const totalPaid = student.fees.reduce((sum, f) => sum + (f.paidAmount || 0), 0);
+        const pendingDetails = student.fees
+          .filter(f => f.remainingAmount > 0)
+          .map(f => `${f.feeCategoryId?.name || 'Unknown'}: Rs.${f.remainingAmount}`)
+          .join(', ');
+
+        return {
+          'Student Name': student.studentName || '',
+          'Admission No': student.admissionNumber || '',
+          'EMIS No': student.emisNo || student.emisNumber || '',
+          'DOB': formatDateToYYYYMMDD(student.dateOfBirth),
+          'Gender / Sex': student.gender || '',
+          'Blood Group': student.bloodGroup || '',
+          'Aadhar No': student.aadhaarNumber || '',
+          'Religion': student.religion || '',
+          'Community': student.community || '',
+          'Caste': student.caste || '',
+          'RTE': student.RTE || '',
+          'Nationality': student.nationality || '',
+          'Father Name': student.fatherName || '',
+          'Father Phone': student.fatherPhone || '',
+          'Father Occupation': student.fatherOccupation || '',
+          'Mother Name': student.motherName || '',
+          'Mother Phone': student.motherPhone || '',
+          'Mother Occupation': student.motherOccupation || '',
+          'Guardian Name': student.guardianName || student.guardian || '',
+          'Whatsapp Number': student.whatsappNumber || '',
+          'Address': student.address || '',
+          'City': student.city || '',
+          'State': student.state || '',
+          'Pincode': student.pincode || '',
+          'Total Fee': totalFee,
+          'Paid Amount': totalPaid,
+          'Pending Fee': student.totalPending,
+          'Pending Details': pendingDetails || 'None'
+        };
+      });
 
       const ws = xlsx.utils.json_to_sheet(exportRows, {
         header: [
@@ -245,7 +258,11 @@ export const exportStudents = async (req, res) => {
           'Address',
           'City',
           'State',
-          'Pincode'
+          'Pincode',
+          'Total Fee',
+          'Paid Amount',
+          'Pending Fee',
+          'Pending Details'
         ]
       });
 
