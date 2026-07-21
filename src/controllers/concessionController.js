@@ -16,56 +16,22 @@ export const getStudentFeesWithConcessions = async (req, res) => {
       endDate
     } = req.query;
 
-    // 1. Build Student Query
-    const studentQuery = {};
-    if (className) studentQuery.currentClass = className;
-    if (section) studentQuery.section = section;
-    if (search) {
-      studentQuery.$or = [
-        { studentName: { $regex: search, $options: 'i' } },
-        { admissionNumber: { $regex: search, $options: 'i' } }
-      ];
-    }
-    if (admissionNumber) {
-      studentQuery.admissionNumber = { $regex: admissionNumber, $options: 'i' };
-    }
+    const concessionQuery = {};
 
-    // Retrieve matching students
-    const students = await Student.find(studentQuery).lean();
-    const studentIds = students.map(s => s._id);
-    const studentMap = new Map(students.map(s => [s._id.toString(), s]));
-
-    // If student filters are active and no students match, return empty array immediately
-    if (studentIds.length === 0 && (className || section || search || admissionNumber)) {
-      return res.json([]);
-    }
-
-    // 2. Build StudentFee Query
-    const feeQuery = {};
-    if (studentIds.length > 0) {
-      feeQuery.studentId = { $in: studentIds };
-    }
-    if (feeCategoryId) {
-      feeQuery.feeCategoryId = feeCategoryId;
+    if (academicYear) {
+      concessionQuery.academicYear = academicYear;
     }
     if (className) {
-      feeQuery.className = className;
+      concessionQuery.className = className;
     }
-
-
-    const studentFees = await StudentFee.find(feeQuery)
-      .populate('feeCategoryId')
-      .lean();
-
-    const studentFeeIds = studentFees.map(f => f._id);
-
-    // 3. Build Concession Query
-    const concessionQuery = {};
-    if (studentFeeIds.length > 0) {
-      concessionQuery.studentFeeId = { $in: studentFeeIds };
+    if (section) {
+      concessionQuery.section = section;
+    }
+    if (feeCategoryId) {
+      concessionQuery.feeCategoryId = feeCategoryId;
     }
     if (reason) {
-      concessionQuery.reason = reason;
+      concessionQuery.reason = { $regex: reason, $options: 'i' };
     }
     if (assignedBy) {
       concessionQuery.createdBy = assignedBy;
@@ -76,67 +42,67 @@ export const getStudentFeesWithConcessions = async (req, res) => {
       if (endDate) concessionQuery.createdAt.$lte = new Date(endDate);
     }
 
-    // Find active concessions matching concession filters
+    // Filter by student-specific search parameters if provided
+    if (search || admissionNumber) {
+      const studentQuery = {};
+      if (search) {
+        studentQuery.$or = [
+          { studentName: { $regex: search, $options: 'i' } },
+          { admissionNumber: { $regex: search, $options: 'i' } }
+        ];
+      }
+      if (admissionNumber) {
+        studentQuery.admissionNumber = { $regex: admissionNumber, $options: 'i' };
+      }
+      const matchedStudents = await Student.find(studentQuery).select('_id').lean();
+      const studentIds = matchedStudents.map(s => s._id);
+      concessionQuery.studentId = { $in: studentIds };
+    }
+
     const concessions = await StudentFeeConcession.find(concessionQuery)
+      .populate('studentId')
+      .populate('feeCategoryId')
       .populate('createdBy', 'username')
       .populate('updatedBy', 'username')
       .populate('deletedBy', 'username')
+      .sort({ createdAt: -1 })
       .lean();
 
-    // Map concessions by studentFeeId (active ones take precedence or we map the active one)
-    const concessionMap = new Map();
-    concessions.forEach(c => {
-      // If active, map it. If multiple, map the active one or most recent one
-      const key = c.studentFeeId.toString();
-      if (!concessionMap.has(key) || c.status === 'Active') {
-        concessionMap.set(key, c);
-      }
-    });
+    const result = concessions.map(c => {
+      if (!c.studentId) return null;
 
-    // 4. Merge data to form the table response
-    let result = studentFees.map(fee => {
-      const student = studentMap.get(fee.studentId.toString());
-      if (!student) return null; // skip if student not found in filtered list
-
-      const concession = concessionMap.get(fee._id.toString());
-      
-      const originalAmount = fee.totalAmount || 0;
-      const lessAmount = concession ? concession.lessAmount : 0;
-      const netPayable = (concession && concession.status === 'Active') 
-        ? Math.max(0, originalAmount - lessAmount) 
+      const originalAmount = c.originalAmount || 0;
+      const lessAmount = c.lessAmount || 0;
+      const netPayable = c.status === 'Active'
+        ? Math.max(0, originalAmount - lessAmount)
         : originalAmount;
 
       return {
-        _id: fee._id,
-        studentId: fee.studentId,
-        studentFeeId: fee._id,
-        admissionNumber: student.admissionNumber,
-        studentName: student.studentName,
-        className: fee.className || student.currentClass,
-        section: student.section,
-        feeCategory: fee.feeCategoryId?.name || 'Unknown',
-        feeCategoryId: fee.feeCategoryId?._id,
+        _id: c.studentFeeId || c._id,
+        studentId: c.studentId._id,
+        studentFeeId: c.studentFeeId,
+        admissionNumber: c.studentId.admissionNumber,
+        studentName: c.studentId.studentName,
+        className: c.className || c.studentId.currentClass,
+        section: c.section || c.studentId.section,
+        feeCategory: c.feeCategoryId?.name || 'Unknown',
+        feeCategoryId: c.feeCategoryId?._id,
         originalAmount,
         lessAmount,
         netPayable,
-        reason: concession ? concession.reason : '',
-        remarks: concession ? concession.remarks : '',
-        assignedBy: concession?.createdBy?.username || '',
-        assignedDate: concession ? concession.createdAt : null,
-        status: concession ? concession.status : 'None',
-        concessionId: concession ? concession._id : null
+        reason: c.reason || '',
+        remarks: c.remarks || '',
+        assignedBy: c.createdBy?.username || '',
+        assignedDate: c.createdAt,
+        status: c.status || 'None',
+        concessionId: c._id
       };
     }).filter(Boolean);
 
-    // If concession-specific filters are active, we should filter out records that don't have concessions matching the filter
-    if (reason || assignedBy || startDate || endDate) {
-      result = result.filter(r => r.status !== 'None');
-    }
-
     res.json(result);
   } catch (error) {
-    console.error('Error fetching student fees with concessions:', error);
-    res.status(500).json({ error: 'Error fetching student fees and concessions' });
+    console.error('Error fetching concessions:', error);
+    res.status(500).json({ error: 'Error fetching concessions history' });
   }
 };
 
