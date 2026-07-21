@@ -3,6 +3,7 @@ import { Student, StudentFee, Payment, Invoice, FeeCategory, ActivityLog, StockH
 import PDFDocument from 'pdfkit';
 import path from 'path';
 import fs from 'fs';
+import { logoBase64 } from '../utils/logoBase64.js';
 
 const generateInvoiceNumber = async () => {
   const currentYear = new Date().getFullYear();
@@ -222,20 +223,13 @@ const drawReceiptCopy = ({
     .strokeColor('#CBD5E1')
     .stroke();
 
-  if (logoPath && fs.existsSync(logoPath)) {
-    try {
-      const svgCode = fs.readFileSync(logoPath, 'utf8');
-      doc.save();
-      doc.translate(innerX, innerY);
-      SVGtoPDF(doc, svgCode, 0, 0, {
-        assumePt: true,
-        width: mmToPt(12),
-        height: mmToPt(12)
-      });
-      doc.restore();
-    } catch (imageError) {
-      console.error('Error loading receipt logo', imageError);
-    }
+  try {
+    const imageBuffer = Buffer.from(logoBase64, 'base64');
+    doc.image(imageBuffer, innerX, innerY, {
+      width: mmToPt(12)
+    });
+  } catch (imageError) {
+    console.error('Error loading receipt logo', imageError);
   }
 
   const textX = innerX + mmToPt(14);
