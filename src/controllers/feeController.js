@@ -27,7 +27,7 @@ const recalculateStudentTotals = async (studentId) => {
 export const getFeeCategories = async (req, res) => {
   try {
     const categories = await FeeCategory.find()
-      .select('name isEnabled mandatory isStockItem currentStock createdAt updatedAt')
+      .select('name isEnabled mandatory isStockItem currentStock topStock bottomStock createdAt updatedAt')
       .sort({ name: 1 })
       .lean();
     res.json(categories);
@@ -38,7 +38,7 @@ export const getFeeCategories = async (req, res) => {
 
 export const createFeeCategory = async (req, res) => {
   try {
-    const { name, isEnabled, mandatory, isStockItem, initialStock, currentStock } = req.body;
+    const { name, isEnabled, mandatory, isStockItem, initialStock, currentStock, topStock, bottomStock } = req.body;
     
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Category Name is required.' });
@@ -50,12 +50,24 @@ export const createFeeCategory = async (req, res) => {
       return res.status(400).json({ error: 'A fee category with this name already exists. Please choose a different name.' });
     }
 
+    const isUniform = trimmedName.toLowerCase() === 'uniform';
     let parsedStock = 0;
+    let parsedTopStock = 0;
+    let parsedBottomStock = 0;
+
     if (isStockItem) {
-      const stockInput = currentStock !== undefined ? currentStock : initialStock;
-      parsedStock = parseInt(stockInput, 10);
-      if (isNaN(parsedStock) || parsedStock < 0) {
-        return res.status(400).json({ error: 'Initial Stock must be a positive whole number.' });
+      if (isUniform) {
+        parsedTopStock = parseFloat(topStock);
+        parsedBottomStock = parseFloat(bottomStock);
+        if (isNaN(parsedTopStock) || parsedTopStock < 0 || isNaN(parsedBottomStock) || parsedBottomStock < 0) {
+          return res.status(400).json({ error: 'Top and Bottom Stock must be positive numbers.' });
+        }
+      } else {
+        const stockInput = currentStock !== undefined ? currentStock : initialStock;
+        parsedStock = parseInt(stockInput, 10);
+        if (isNaN(parsedStock) || parsedStock < 0) {
+          return res.status(400).json({ error: 'Initial Stock must be a positive whole number.' });
+        }
       }
     }
 
@@ -64,19 +76,35 @@ export const createFeeCategory = async (req, res) => {
       isEnabled: isEnabled ?? true, 
       mandatory: mandatory ?? false,
       isStockItem: !!isStockItem,
-      currentStock: isStockItem ? parsedStock : 0
+      currentStock: (isStockItem && !isUniform) ? parsedStock : 0,
+      topStock: (isStockItem && isUniform) ? parsedTopStock : 0,
+      bottomStock: (isStockItem && isUniform) ? parsedBottomStock : 0
     });
 
-    if (isStockItem && parsedStock > 0) {
-      await StockHistory.create({
-        categoryId: category._id,
-        categoryName: category.name,
-        previousStock: 0,
-        updatedStock: parsedStock,
-        difference: parsedStock,
-        action: 'INITIAL_STOCK_CREATION',
-        updatedBy: req.user?.id
-      });
+    if (isStockItem) {
+      if (isUniform) {
+        if (parsedTopStock > 0 || parsedBottomStock > 0) {
+          await StockHistory.create({
+            categoryId: category._id,
+            categoryName: category.name,
+            previousStock: 0,
+            updatedStock: parsedTopStock + parsedBottomStock,
+            difference: parsedTopStock + parsedBottomStock,
+            action: 'INITIAL_STOCK_CREATION',
+            updatedBy: req.user?.id
+          });
+        }
+      } else if (parsedStock > 0) {
+        await StockHistory.create({
+          categoryId: category._id,
+          categoryName: category.name,
+          previousStock: 0,
+          updatedStock: parsedStock,
+          difference: parsedStock,
+          action: 'INITIAL_STOCK_CREATION',
+          updatedBy: req.user?.id
+        });
+      }
     }
 
     res.status(201).json(category);
@@ -92,13 +120,14 @@ export const createFeeCategory = async (req, res) => {
 export const updateFeeCategory = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, isEnabled, mandatory, isStockItem, currentStock, updatedStock } = req.body;
+    const { name, isEnabled, mandatory, isStockItem, currentStock, updatedStock, topStock, bottomStock, updatedTopStock, updatedBottomStock } = req.body;
 
     const existingCat = await FeeCategory.findById(id);
     if (!existingCat) {
       return res.status(404).json({ error: 'Fee category not found' });
     }
 
+    let finalName = existingCat.name;
     if (name && name.trim()) {
       const trimmedName = name.trim();
       if (trimmedName.toLowerCase() !== existingCat.name.toLowerCase()) {
@@ -110,43 +139,82 @@ export const updateFeeCategory = async (req, res) => {
           return res.status(400).json({ error: 'A fee category with this name already exists. Please choose a different name.' });
         }
       }
+      finalName = trimmedName;
     }
 
+    const isUniform = finalName.toLowerCase() === 'uniform';
     let targetStock = existingCat.currentStock || 0;
+    let targetTopStock = existingCat.topStock || 0;
+    let targetBottomStock = existingCat.bottomStock || 0;
     const nextIsStockItem = isStockItem !== undefined ? !!isStockItem : existingCat.isStockItem;
 
     if (nextIsStockItem) {
-      const stockInput = updatedStock !== undefined ? updatedStock : (currentStock !== undefined ? currentStock : existingCat.currentStock);
-      targetStock = parseInt(stockInput, 10);
-      if (isNaN(targetStock) || targetStock < 0) {
-        return res.status(400).json({ error: 'Stock must be a positive whole number.' });
+      if (isUniform) {
+        const topInput = updatedTopStock !== undefined ? updatedTopStock : (topStock !== undefined ? topStock : existingCat.topStock);
+        const bottomInput = updatedBottomStock !== undefined ? updatedBottomStock : (bottomStock !== undefined ? bottomStock : existingCat.bottomStock);
+        targetTopStock = parseFloat(topInput);
+        targetBottomStock = parseFloat(bottomInput);
+        if (isNaN(targetTopStock) || targetTopStock < 0 || isNaN(targetBottomStock) || targetBottomStock < 0) {
+          return res.status(400).json({ error: 'Top and Bottom Stock must be positive numbers.' });
+        }
+      } else {
+        const stockInput = updatedStock !== undefined ? updatedStock : (currentStock !== undefined ? currentStock : existingCat.currentStock);
+        targetStock = parseInt(stockInput, 10);
+        if (isNaN(targetStock) || targetStock < 0) {
+          return res.status(400).json({ error: 'Stock must be a positive whole number.' });
+        }
       }
     } else {
       targetStock = 0;
+      targetTopStock = 0;
+      targetBottomStock = 0;
     }
 
     const prevStock = existingCat.currentStock || 0;
-    const stockChanged = nextIsStockItem && targetStock !== prevStock;
+    const prevTopStock = existingCat.topStock || 0;
+    const prevBottomStock = existingCat.bottomStock || 0;
 
-    existingCat.name = name !== undefined ? name.trim() : existingCat.name;
+    let stockChanged = false;
+
+    if (isUniform) {
+      stockChanged = nextIsStockItem && (targetTopStock !== prevTopStock || targetBottomStock !== prevBottomStock);
+    } else {
+      stockChanged = nextIsStockItem && targetStock !== prevStock;
+    }
+
+    existingCat.name = finalName;
     existingCat.isEnabled = isEnabled !== undefined ? isEnabled : existingCat.isEnabled;
     existingCat.mandatory = mandatory !== undefined ? mandatory : existingCat.mandatory;
     existingCat.isStockItem = nextIsStockItem;
-    existingCat.currentStock = targetStock;
+    existingCat.currentStock = isUniform ? 0 : targetStock;
+    existingCat.topStock = isUniform ? targetTopStock : 0;
+    existingCat.bottomStock = isUniform ? targetBottomStock : 0;
 
     await existingCat.save();
 
     if (stockChanged) {
-      const diff = targetStock - prevStock;
-      await StockHistory.create({
-        categoryId: existingCat._id,
-        categoryName: existingCat.name,
-        previousStock: prevStock,
-        updatedStock: targetStock,
-        difference: diff,
-        action: 'MANUAL_CORRECTION',
-        updatedBy: req.user?.id
-      });
+      if (isUniform) {
+        await StockHistory.create({
+          categoryId: existingCat._id,
+          categoryName: existingCat.name,
+          previousStock: prevTopStock + prevBottomStock,
+          updatedStock: targetTopStock + targetBottomStock,
+          difference: (targetTopStock + targetBottomStock) - (prevTopStock + prevBottomStock),
+          action: 'MANUAL_CORRECTION',
+          updatedBy: req.user?.id
+        });
+      } else {
+        const diff = targetStock - prevStock;
+        await StockHistory.create({
+          categoryId: existingCat._id,
+          categoryName: existingCat.name,
+          previousStock: prevStock,
+          updatedStock: targetStock,
+          difference: diff,
+          action: 'MANUAL_CORRECTION',
+          updatedBy: req.user?.id
+        });
+      }
     }
 
     res.json(existingCat);

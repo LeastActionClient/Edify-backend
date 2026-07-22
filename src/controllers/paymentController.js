@@ -349,8 +349,8 @@ const getInvoicePaymentData = async (id) => {
     Payment.findById(id)
       .populate('studentId', 'studentName admissionNumber currentClass section academicYear studentStatus fatherPhone motherPhone whatsappNumber emisNo emisNumber guardianName guardian')
       .populate('applicationId', 'studentName applicationId applyingClass status feePaid feeAmount feePaidDate')
-      .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock' } })
-      .populate({ path: 'feeAllocations.studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock' } })
+      .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock topStock bottomStock' } })
+      .populate({ path: 'feeAllocations.studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock topStock bottomStock' } })
       .populate('recordedById', 'username')
       .lean(),
     Invoice.findOne({ paymentId: id }).select('invoiceNumber paymentId studentId generatedDate createdAt updatedAt').lean()
@@ -670,30 +670,58 @@ export const createPayment = async (req, res) => {
       const studentFee = unpaidFees.find(f => f._id.toString() === alloc.studentFeeId.toString());
       if (studentFee && studentFee.feeCategoryId) {
         const cat = await FeeCategory.findById(studentFee.feeCategoryId).session(session);
-        if (cat && cat.isStockItem) {
-          const updatedCat = await FeeCategory.findOneAndUpdate(
-            { _id: cat._id, currentStock: { $gte: 1 } },
-            { $inc: { currentStock: -1 } },
-            { new: true, session }
-          );
+        if (cat && cat.isStockItem && !studentFee.isStockDeducted) {
+          if (cat.name.toLowerCase() === 'uniform') {
+            const topLen = parseFloat(studentFee.uniformDetails?.topLength || 0);
+            const bottomLen = parseFloat(studentFee.uniformDetails?.bottomLength || 0);
+            const updatedCat = await FeeCategory.findOneAndUpdate(
+              { _id: cat._id, topStock: { $gte: topLen }, bottomStock: { $gte: bottomLen } },
+              { $inc: { topStock: -topLen, bottomStock: -bottomLen } },
+              { new: true, session }
+            );
 
-          if (!updatedCat) {
-            await session.abortTransaction();
-            session.endSession();
-            return res.status(400).json({ error: `Insufficient stock for ${cat.name}. Stock was depleted by a concurrent transaction.` });
+            if (!updatedCat) {
+              await session.abortTransaction();
+              session.endSession();
+              return res.status(400).json({ error: `Insufficient stock for ${cat.name} (Top needed: ${topLen}m, Bottom needed: ${bottomLen}m).` });
+            }
+
+            await StockHistory.create([{
+              categoryId: cat._id,
+              categoryName: cat.name,
+              previousStock: (updatedCat.topStock + topLen) + (updatedCat.bottomStock + bottomLen),
+              updatedStock: updatedCat.topStock + updatedCat.bottomStock,
+              difference: -(topLen + bottomLen),
+              action: 'ASSIGNED',
+              referenceType: 'Payment',
+              referenceId: payment._id,
+              updatedBy: req.user.id
+            }], { session });
+          } else {
+            const updatedCat = await FeeCategory.findOneAndUpdate(
+              { _id: cat._id, currentStock: { $gte: 1 } },
+              { $inc: { currentStock: -1 } },
+              { new: true, session }
+            );
+
+            if (!updatedCat) {
+              await session.abortTransaction();
+              session.endSession();
+              return res.status(400).json({ error: `Insufficient stock for ${cat.name}. Stock was depleted by a concurrent transaction.` });
+            }
+
+            await StockHistory.create([{
+              categoryId: cat._id,
+              categoryName: cat.name,
+              previousStock: updatedCat.currentStock + 1,
+              updatedStock: updatedCat.currentStock,
+              difference: -1,
+              action: 'ASSIGNED',
+              referenceType: 'Payment',
+              referenceId: payment._id,
+              updatedBy: req.user.id
+            }], { session });
           }
-
-          await StockHistory.create([{
-            categoryId: cat._id,
-            categoryName: cat.name,
-            previousStock: updatedCat.currentStock + 1,
-            updatedStock: updatedCat.currentStock,
-            difference: -1,
-            action: 'ASSIGNED',
-            referenceType: 'Payment',
-            referenceId: payment._id,
-            updatedBy: req.user.id
-          }], { session });
 
           await StudentFee.findByIdAndUpdate(studentFee._id, {
             isStockDeducted: true
@@ -735,8 +763,8 @@ export const getPaymentHistory = async (req, res) => {
     const payments = await Payment.find()
       .populate('studentId', 'studentName admissionNumber currentClass section academicYear studentStatus')
       .populate('applicationId', 'studentName applicationId applyingClass status')
-      .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock' } })
-      .populate({ path: 'feeAllocations.studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock' } })
+      .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock topStock bottomStock' } })
+      .populate({ path: 'feeAllocations.studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock topStock bottomStock' } })
       .populate('recordedById', 'username')
       .sort({ paymentDate: -1 })
       .lean();
@@ -933,28 +961,32 @@ export const deletePayment = async (req, res) => {
         if (studentFee && studentFee.feeCategoryId) {
           const cat = await FeeCategory.findById(studentFee.feeCategoryId);
           if (cat && cat.isStockItem) {
-            const updatedCat = await FeeCategory.findOneAndUpdate(
-              { _id: cat._id },
-              { $inc: { currentStock: 1 } },
-              { new: true }
-            );
+            if (cat.name.toLowerCase() === 'uniform') {
+              // Uniform stock is handled upon student details assignment, so deleting a payment does not restore stock.
+            } else {
+              const updatedCat = await FeeCategory.findOneAndUpdate(
+                { _id: cat._id },
+                { $inc: { currentStock: 1 } },
+                { new: true }
+              );
 
-            if (updatedCat) {
-              await StockHistory.create({
-                categoryId: cat._id,
-                categoryName: cat.name,
-                previousStock: updatedCat.currentStock - 1,
-                updatedStock: updatedCat.currentStock,
-                difference: 1,
-                action: 'REMOVED',
-                referenceType: 'Payment',
-                referenceId: payment._id,
-                updatedBy: req.user?.id
-              });
+              if (updatedCat) {
+                await StockHistory.create({
+                  categoryId: cat._id,
+                  categoryName: cat.name,
+                  previousStock: updatedCat.currentStock - 1,
+                  updatedStock: updatedCat.currentStock,
+                  difference: 1,
+                  action: 'REMOVED',
+                  referenceType: 'Payment',
+                  referenceId: payment._id,
+                  updatedBy: req.user?.id
+                });
 
-              await StudentFee.findByIdAndUpdate(studentFee._id, {
-                isStockDeducted: false
-              });
+                await StudentFee.findByIdAndUpdate(studentFee._id, {
+                  isStockDeducted: false
+                });
+              }
             }
           }
         }
