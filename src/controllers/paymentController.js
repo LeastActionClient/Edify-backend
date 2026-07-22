@@ -5,6 +5,8 @@ import path from 'path';
 import fs from 'fs';
 import { logoBase64 } from '../utils/logoBase64.js';
 
+const EFFECTIVE_CONCESSION_STATUSES = new Set(['Active', 'Completed', 'Expired']);
+
 const generateInvoiceNumber = async () => {
   const currentYear = new Date().getFullYear();
   // Find the invoice with the highest number for the current year
@@ -28,6 +30,32 @@ const mmToPt = (value) => value * MM_TO_PT;
 const toNumber = (value) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const applyConcessionSnapshot = (fee, concession) => {
+  const feeDoc = fee || {};
+  const concessionDoc = concession || null;
+
+  if (!concessionDoc) {
+    feeDoc.lessAmount = 0;
+    feeDoc.discountAmount = 0;
+    feeDoc.concessionStatus = 'None';
+    return feeDoc;
+  }
+
+  feeDoc.concessionStatus = concessionDoc.status || 'None';
+
+  if (EFFECTIVE_CONCESSION_STATUSES.has(concessionDoc.status)) {
+    feeDoc.lessAmount = concessionDoc.lessAmount || 0;
+    feeDoc.discountAmount = concessionDoc.lessAmount || 0;
+    feeDoc.remainingAmount = Math.max(0, (feeDoc.totalAmount || 0) - (concessionDoc.lessAmount || 0) - (feeDoc.paidAmount || 0));
+  } else {
+    feeDoc.lessAmount = 0;
+    feeDoc.discountAmount = 0;
+    feeDoc.remainingAmount = Math.max(0, (feeDoc.totalAmount || 0) - (feeDoc.paidAmount || 0));
+  }
+
+  return feeDoc;
 };
 
 const normalizeSpaces = (value) => String(value || '').replace(/\s+/g, ' ').trim();
@@ -389,8 +417,8 @@ const getInvoicePaymentData = async (id) => {
   // Load and apply concessions dynamically to match discountAmount in PDF / invoice details
   const studentIdForConcessions = payment.studentId?._id || payment.studentId;
   const concessions = studentIdForConcessions 
-    ? await StudentFeeConcession.find({ studentId: studentIdForConcessions, status: { $in: ['Active', 'Inactive'] } })
-      .select('studentFeeId lessAmount status')
+    ? await StudentFeeConcession.find({ studentId: studentIdForConcessions, status: { $in: ['Active', 'Inactive', 'Completed', 'Expired'] } })
+      .select('studentFeeId lessAmount status academicYear academicYearId')
       .lean()
     : [];
   const concessionMap = new Map(concessions.map(c => [c.studentFeeId.toString(), c]));
@@ -400,43 +428,15 @@ const getInvoicePaymentData = async (id) => {
     if (payment.studentFee.feeCategoryId) {
       payment.studentFee.feeCategory = payment.studentFee.feeCategoryId;
     }
-    const concession = concessionMap.get(payment.studentFee._id.toString());
-    if (concession) {
-      payment.studentFee.lessAmount = concession.lessAmount;
-      payment.studentFee.discountAmount = concession.lessAmount;
-      payment.studentFee.concessionStatus = concession.status;
-      if (concession.status === 'Active') {
-        payment.studentFee.remainingAmount = Math.max(0, payment.studentFee.totalAmount - concession.lessAmount - (payment.studentFee.paidAmount || 0));
-      } else {
-        payment.studentFee.remainingAmount = Math.max(0, payment.studentFee.totalAmount - (payment.studentFee.paidAmount || 0));
-      }
-    } else {
-      payment.studentFee.lessAmount = 0;
-      payment.studentFee.discountAmount = 0;
-      payment.studentFee.concessionStatus = 'None';
-    }
+    applyConcessionSnapshot(payment.studentFee, concessionMap.get(payment.studentFee._id.toString()));
   }
 
   if (payment.feeAllocations && payment.feeAllocations.length > 0) {
     payment.feeAllocations.forEach(alloc => {
       if (alloc.studentFeeId) {
         const concession = concessionMap.get(alloc.studentFeeId._id.toString());
-        if (concession) {
-          alloc.studentFeeId.lessAmount = concession.lessAmount;
-          alloc.studentFeeId.discountAmount = concession.lessAmount;
-          alloc.discountAmount = concession.lessAmount;
-          alloc.studentFeeId.concessionStatus = concession.status;
-          if (concession.status === 'Active') {
-            alloc.studentFeeId.remainingAmount = Math.max(0, alloc.studentFeeId.totalAmount - concession.lessAmount - (alloc.studentFeeId.paidAmount || 0));
-          } else {
-            alloc.studentFeeId.remainingAmount = Math.max(0, alloc.studentFeeId.totalAmount - (alloc.studentFeeId.paidAmount || 0));
-          }
-        } else {
-          alloc.studentFeeId.lessAmount = 0;
-          alloc.studentFeeId.discountAmount = 0;
-          alloc.discountAmount = 0;
-          alloc.studentFeeId.concessionStatus = 'None';
-        }
+        applyConcessionSnapshot(alloc.studentFeeId, concession);
+        alloc.discountAmount = alloc.studentFeeId.discountAmount || 0;
       }
     });
   }
@@ -539,7 +539,7 @@ export const createPayment = async (req, res) => {
     // Load active/inactive concessions for these fees
     const concessions = await StudentFeeConcession.find({
       studentFeeId: { $in: resolvedFeeIds },
-      status: { $in: ['Active', 'Inactive'] }
+      status: { $in: ['Active', 'Inactive', 'Completed', 'Expired'] }
     }).session(session).lean();
 
     const concessionMap = new Map(concessions.map(c => [c.studentFeeId.toString(), c]));
@@ -547,13 +547,16 @@ export const createPayment = async (req, res) => {
     // Adjust the remaining amounts in memory for total validation and allocation
     unpaidFees.forEach(fee => {
       const concession = concessionMap.get(fee._id.toString());
-      if (concession && concession.status === 'Active') {
+      fee.originalRemainingAmount = fee.remainingAmount;
+      if (concession) {
         fee.lessAmount = concession.lessAmount;
-        fee.originalRemainingAmount = fee.remainingAmount;
-        fee.remainingAmount = Math.max(0, fee.totalAmount - concession.lessAmount - fee.paidAmount);
+        if (EFFECTIVE_CONCESSION_STATUSES.has(concession.status)) {
+          fee.remainingAmount = Math.max(0, fee.totalAmount - concession.lessAmount - fee.paidAmount);
+        } else {
+          fee.remainingAmount = Math.max(0, fee.totalAmount - fee.paidAmount);
+        }
       } else {
         fee.lessAmount = 0;
-        fee.originalRemainingAmount = fee.remainingAmount;
         fee.remainingAmount = Math.max(0, fee.totalAmount - fee.paidAmount);
       }
     });
@@ -637,6 +640,12 @@ export const createPayment = async (req, res) => {
         paidAmount: newPaidAmount,
         remainingAmount: newRemainingAmount
       }, { session });
+
+      const relatedConcession = await StudentFeeConcession.findOne({ studentFeeId: fee._id }).session(session);
+      if (relatedConcession && relatedConcession.status === 'Active' && newRemainingAmount <= 0) {
+        relatedConcession.status = 'Completed';
+        await relatedConcession.save({ session });
+      }
 
       if (feeStatus === 'PAID') {
         const category = await FeeCategory.findById(fee.feeCategoryId).session(session);
@@ -749,9 +758,9 @@ export const getPaymentHistory = async (req, res) => {
         .lean(),
       StudentFeeConcession.find({
         studentId: { $in: studentIds },
-        status: { $in: ['Active', 'Inactive'] }
+        status: { $in: ['Active', 'Inactive', 'Completed', 'Expired'] }
       })
-        .select('studentFeeId lessAmount status')
+        .select('studentFeeId lessAmount status academicYear academicYearId')
         .lean()
     ]);
     const invoiceMap = {};
@@ -775,42 +784,14 @@ export const getPaymentHistory = async (req, res) => {
         if (pObj.studentFee.feeCategoryId) {
           pObj.studentFee.feeCategory = pObj.studentFee.feeCategoryId;
         }
-        const concession = concessionMap.get(pObj.studentFee._id.toString());
-        if (concession) {
-          pObj.studentFee.lessAmount = concession.lessAmount;
-          pObj.studentFee.discountAmount = concession.lessAmount;
-          pObj.studentFee.concessionStatus = concession.status;
-          if (concession.status === 'Active') {
-            pObj.studentFee.remainingAmount = Math.max(0, pObj.studentFee.totalAmount - concession.lessAmount - (pObj.studentFee.paidAmount || 0));
-          } else {
-            pObj.studentFee.remainingAmount = Math.max(0, pObj.studentFee.totalAmount - (pObj.studentFee.paidAmount || 0));
-          }
-        } else {
-          pObj.studentFee.lessAmount = 0;
-          pObj.studentFee.discountAmount = 0;
-          pObj.studentFee.concessionStatus = 'None';
-        }
+        applyConcessionSnapshot(pObj.studentFee, concessionMap.get(pObj.studentFee._id.toString()));
       }
       if (pObj.feeAllocations && pObj.feeAllocations.length > 0) {
         pObj.feeAllocations.forEach(alloc => {
           if (alloc.studentFeeId) {
             const concession = concessionMap.get(alloc.studentFeeId._id.toString());
-            if (concession) {
-              alloc.studentFeeId.lessAmount = concession.lessAmount;
-              alloc.studentFeeId.discountAmount = concession.lessAmount;
-              alloc.discountAmount = concession.lessAmount;
-              alloc.studentFeeId.concessionStatus = concession.status;
-              if (concession.status === 'Active') {
-                alloc.studentFeeId.remainingAmount = Math.max(0, alloc.studentFeeId.totalAmount - concession.lessAmount - (alloc.studentFeeId.paidAmount || 0));
-              } else {
-                alloc.studentFeeId.remainingAmount = Math.max(0, alloc.studentFeeId.totalAmount - (alloc.studentFeeId.paidAmount || 0));
-              }
-            } else {
-              alloc.studentFeeId.lessAmount = 0;
-              alloc.studentFeeId.discountAmount = 0;
-              alloc.discountAmount = 0;
-              alloc.studentFeeId.concessionStatus = 'None';
-            }
+            applyConcessionSnapshot(alloc.studentFeeId, concession);
+            alloc.discountAmount = alloc.studentFeeId.discountAmount || 0;
           }
         });
       }

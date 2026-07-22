@@ -1766,11 +1766,24 @@ export const promoteStudents = async (req, res) => {
             }
           );
 
-          // 2.5 Cancel all active concessions for this student (concessions don't carry over to new academic year)
-          await StudentFeeConcession.updateMany(
-            { studentId: student._id, status: 'Active' },
-            { $set: { status: 'Cancelled' } }
-          );
+          // 2.5 Preserve old concessions on the source academic year.
+          // If any are already fully settled, mark them as completed so they become read-only.
+          const activeConcessions = await StudentFeeConcession.find({
+            studentId: student._id,
+            status: 'Active'
+          })
+            .select('_id studentFeeId')
+            .lean();
+
+          for (const concession of activeConcessions) {
+            const concessionFee = await StudentFee.findById(concession.studentFeeId).select('remainingAmount').lean();
+            if (concessionFee && (concessionFee.remainingAmount || 0) <= 0) {
+              await StudentFeeConcession.updateOne(
+                { _id: concession._id },
+                { $set: { status: 'Completed', updatedBy: req.user?.id || null } }
+              );
+            }
+          }
 
           // 3. Update student to new class
           student.currentClass = nextClass;
