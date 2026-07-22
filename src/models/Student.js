@@ -21,7 +21,6 @@ const studentSchema = new mongoose.Schema({
   religion: { type: String },
   community: { type: String },
   nationality: { type: String },
-  email: { type: String },
   rollNumber: { type: String },
   admissionDate: { type: Date },
   academicYear: { type: String },

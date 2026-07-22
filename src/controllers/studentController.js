@@ -400,7 +400,8 @@ const validateStudentInput = (data) => {
     motherOccupation,
     caste,
     emisNo,
-    emisNumber
+    emisNumber,
+    pincode
   } = data;
 
   // Father Name Validation (Optional)
@@ -499,6 +500,12 @@ const validateStudentInput = (data) => {
     return 'EMIS No must be exactly 10 digits.';
   }
 
+  // Pincode validation (Optional, but must be exactly 6 digits if provided)
+  const pin = (pincode || '').trim();
+  if (pin && !/^\d{6}$/.test(pin)) {
+    return 'Pincode must be exactly 6 digits.';
+  }
+
   return null;
 };
 
@@ -563,7 +570,8 @@ export const addStudentManually = async (req, res) => {
     whatsappNumber,
     caste,
     emisNo,
-    emisNumber
+    emisNumber,
+    pincode
   });
   if (valError) {
     res.status(400).json({ error: valError });
@@ -898,6 +906,7 @@ export const bulkImportStudents = async (req, res) => {
       const emisNoVal = String(row['emis no'] || row['emis number'] || row['emis'] || '').trim();
       const guardianNameVal = String(row['guardian name'] || row['guardian'] || '').trim();
       const whatsappNumberVal = String(row['whatsapp number'] || row['whatsapp no'] || '').trim();
+      const pincodeVal = String(row['pincode'] || row['pin code'] || row['pin'] || row['postal code'] || '').trim();
 
       const rowValError = validateStudentInput({
         fatherName: String(row['father name'] || ''),
@@ -911,7 +920,8 @@ export const bulkImportStudents = async (req, res) => {
         whatsappNumber: whatsappNumberVal,
         caste: casteVal,
         emisNo: emisNoVal,
-        emisNumber: emisNoVal
+        emisNumber: emisNoVal,
+        pincode: pincodeVal
       });
       
       if (rowValError) {
@@ -943,12 +953,11 @@ export const bulkImportStudents = async (req, res) => {
           guardianName: guardianNameVal,
           city: String(row['city'] || ''),
           state: String(row['state'] || ''),
-          pincode: String(row['pincode'] || row['pin code'] || row['pin'] || row['postal code'] || ''),
+          pincode: pincodeVal,
           dateOfBirth: parseExcelDate(row['date of birth'] || row['dob']),
           whatsappNumber: whatsappNumberVal,
           emisNumber: emisNoVal,
           emisNo: emisNoVal,
-          email: String(row['email'] || ''),
           rollNumber: String(row['roll number'] || ''),
           admissionDate: parseExcelDate(row['admission date'] || row['date of admission']),
           studentStatus: String(row['student status'] || row['status'] || 'Active'),
@@ -1131,7 +1140,6 @@ export const updateStudent = async (req, res) => {
       community,
       caste,
       nationality,
-      email,
       rollNumber,
       admissionDate,
       academicYear,
@@ -1192,7 +1200,8 @@ export const updateStudent = async (req, res) => {
       whatsappNumber,
       caste,
       emisNo,
-      emisNumber
+      emisNumber,
+      pincode
     });
     if (valError) {
       return res.status(400).json({ error: valError });
@@ -1523,7 +1532,6 @@ export const updateStudent = async (req, res) => {
         community,
         caste: (caste !== undefined ? caste.trim() : currentStudent.caste) || '',
         nationality,
-        email,
         rollNumber,
         academicYear: currentAcademicYear,
         studentStatus,
