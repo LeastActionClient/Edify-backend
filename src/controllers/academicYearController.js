@@ -30,6 +30,7 @@ export const getAcademicYears = async (req, res) => {
 export const getActiveAcademicYear = async (req, res) => {
   try {
     const activeYear = await AcademicYear.findOne({ status: 'Active' })
+      .sort({ updatedAt: -1, createdAt: -1 })
       .select('year status createdAt updatedAt')
       .lean();
     if (!activeYear) {
@@ -100,10 +101,10 @@ export const updateAcademicYearStatus = async (req, res) => {
     }
 
     if (status === 'Active') {
-      const activeExists = await AcademicYear.findOne({ status: 'Active', _id: { $ne: id } });
-      if (activeExists) {
-        return res.status(400).json({ error: `Another Academic Year (${activeExists.year}) is already active. Please complete it first.` });
-      }
+      await AcademicYear.updateMany(
+        { _id: { $ne: id }, status: 'Active' },
+        { $set: { status: 'Completed' } }
+      );
     }
 
     targetYear.status = status;
