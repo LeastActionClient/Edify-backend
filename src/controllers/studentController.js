@@ -64,8 +64,16 @@ export const assignClassDefaultFeesToStudent = async (student, session = null) =
 
         if (amount > 0) {
           baseFeeTotal += amount;
-          const existing = await StudentFee.findOne({ studentId, feeCategoryId: catId }).session(session);
+          const existing = await StudentFee.findOne({
+            studentId,
+            feeCategoryId: catId,
+            className: currentClass,
+            academicYear: student.academicYear
+          }).session(session);
           if (existing) {
+            if (existing.academicYear !== student.academicYear || existing.className !== currentClass) {
+              throw new Error(`Fee record violation: Cannot mutate historical fee record (${existing.academicYear}/${existing.className}).`);
+            }
             existing.totalAmount = amount;
             existing.remainingAmount = Math.max(0, amount - existing.paidAmount);
             await existing.save(session ? { session } : undefined);
@@ -75,7 +83,9 @@ export const assignClassDefaultFeesToStudent = async (student, session = null) =
               feeCategoryId: catId,
               totalAmount: amount,
               remainingAmount: amount,
-              paidAmount: 0
+              paidAmount: 0,
+              className: currentClass,
+              academicYear: student.academicYear
             };
             if (session) {
               await StudentFee.create([feePayload], { session });
@@ -109,7 +119,7 @@ export const getStudents = async (req, res) => {
       .lean();
 
     const studentIds = students.map(s => s._id);
-    const [studentFees, concessions] = await Promise.all([
+    const [studentFees, concessions, payments, enrollments] = await Promise.all([
       StudentFee.find({ studentId: { $in: studentIds } })
         .select('studentId feeCategoryId totalAmount paidAmount remainingAmount academicYear className uniformDetails isStockDeducted createdAt updatedAt')
         .populate('feeCategoryId', 'name amount mandatory pricing isStockItem currentStock topStock bottomStock')
@@ -119,13 +129,15 @@ export const getStudents = async (req, res) => {
         status: { $in: ['Active', 'Inactive'] }
       })
         .select('studentId studentFeeId lessAmount status')
+        .lean(),
+      Payment.find({ studentId: { $in: studentIds } })
+        .select('studentId paymentDate feeAllocations amount createdAt')
+        .lean(),
+      StudentEnrollment.find({ studentId: { $in: studentIds } })
+        .select('studentId academicYearId academicYear classId className sectionId sectionName status joinedDate promotedDate createdAt updatedAt')
+        .sort({ joinedDate: 1, createdAt: 1 })
         .lean()
     ]);
-
-    const enrollments = await StudentEnrollment.find({ studentId: { $in: studentIds } })
-      .select('studentId academicYearId academicYear classId className sectionId sectionName status joinedDate promotedDate createdAt updatedAt')
-      .sort({ joinedDate: 1, createdAt: 1 })
-      .lean();
 
     const concessionMap = new Map();
     concessions.forEach(c => {
@@ -137,6 +149,13 @@ export const getStudents = async (req, res) => {
       const sid = enrollment.studentId.toString();
       if (!enrollmentMap.has(sid)) enrollmentMap.set(sid, []);
       enrollmentMap.get(sid).push(enrollment);
+    });
+
+    const paymentMap = new Map();
+    payments.forEach(p => {
+      const sid = p.studentId.toString();
+      if (!paymentMap.has(sid)) paymentMap.set(sid, []);
+      paymentMap.get(sid).push(p);
     });
 
     const feeMap = {};
@@ -168,12 +187,61 @@ export const getStudents = async (req, res) => {
       const activeEnrollment = studentEnrollments.find(enrollment => enrollment.status === 'Active')
         || studentEnrollments[studentEnrollments.length - 1]
         || null;
-      const currentClassFees = allFees.filter(f =>
-        f.className === s.currentClass || (!f.className && !f.academicYear)
-      );
-      const previousClassFees = allFees.filter(f =>
-        f.className && f.className !== s.currentClass
-      );
+      const currentClassFees = allFees.filter(f => {
+        if (f.academicYear && s.academicYear) {
+          return f.academicYear === s.academicYear;
+        }
+        return f.className === s.currentClass || (!f.className && !f.academicYear);
+      });
+
+      const previousClassFees = allFees.filter(f => {
+        const hasRemaining = (f.remainingAmount || 0) > 0;
+        const isPreviousYear = f.academicYear && s.academicYear && f.academicYear !== s.academicYear;
+        const isPreviousClass = f.className && s.currentClass && f.className !== s.currentClass;
+        return hasRemaining && (isPreviousYear || isPreviousClass) && !currentClassFees.includes(f);
+      });
+
+      // Calculations according to strict financial business rules
+      const joinedDate = activeEnrollment ? new Date(activeEnrollment.joinedDate || activeEnrollment.createdAt) : null;
+      const studentPayments = paymentMap.get(s._id.toString()) || [];
+      
+      const currentYearPayments = joinedDate
+        ? studentPayments.filter(p => new Date(p.paymentDate || p.createdAt) >= joinedDate)
+        : studentPayments;
+
+      // Payments collected against previous academic year dues during the current year
+      let previousPaidThisYear = 0;
+      const previousFeeIdsSet = new Set(previousClassFees.map(f => f._id.toString()));
+      currentYearPayments.forEach(p => {
+        (p.feeAllocations || []).forEach(alloc => {
+          if (previousFeeIdsSet.has(alloc.studentFeeId?.toString())) {
+            previousPaidThisYear += (alloc.amount || 0);
+          }
+        });
+      });
+
+      // Payments collected against current academic year dues during the current year
+      let currentPaidThisYear = 0;
+      const currentFeeIdsSet = new Set(currentClassFees.map(f => f._id.toString()));
+      currentYearPayments.forEach(p => {
+        (p.feeAllocations || []).forEach(alloc => {
+          if (currentFeeIdsSet.has(alloc.studentFeeId?.toString())) {
+            currentPaidThisYear += (alloc.amount || 0);
+          }
+        });
+      });
+
+      const previousPending = previousClassFees.reduce((sum, f) => sum + (f.remainingAmount || 0), 0);
+      const currentPending = currentClassFees.reduce((sum, f) => sum + (f.remainingAmount || 0), 0);
+      const totalDue = previousPending + currentPending;
+
+      const previousPendingAtPromotion = previousPending + previousPaidThisYear;
+      const currentYearNetFee = currentClassFees.reduce((sum, f) => {
+        const concessionAmount = f.concessionStatus === 'Active' ? (f.lessAmount || 0) : 0;
+        return sum + Math.max(0, (f.totalAmount || 0) - concessionAmount);
+      }, 0);
+      
+      const totalFee = previousPendingAtPromotion + currentYearNetFee;
 
       return {
         ...s,
@@ -189,7 +257,13 @@ export const getStudents = async (req, res) => {
           joinedDate: activeEnrollment.joinedDate,
           promotedDate: activeEnrollment.promotedDate,
           createdAt: activeEnrollment.createdAt
-        } : null
+        } : null,
+        previousPending,
+        currentPending,
+        totalDue,
+        totalFee,
+        previousPaid: previousPaidThisYear,
+        currentPaid: currentPaidThisYear
       };
     });
 
@@ -325,12 +399,60 @@ export const getStudentById = async (req, res) => {
       || enrollments[enrollments.length - 1]
       || null;
 
-    const currentClassFees = studentFees.filter(f =>
-      f.className === student.currentClass || (!f.className && !f.academicYear)
-    );
-    const previousClassFees = studentFees.filter(f =>
-      f.className && f.className !== student.currentClass
-    );
+    const currentClassFees = studentFees.filter(f => {
+      if (f.academicYear && student.academicYear) {
+        return f.academicYear === student.academicYear;
+      }
+      return f.className === student.currentClass || (!f.className && !f.academicYear);
+    });
+
+    const previousClassFees = studentFees.filter(f => {
+      const hasRemaining = (f.remainingAmount || 0) > 0;
+      const isPreviousYear = f.academicYear && student.academicYear && f.academicYear !== student.academicYear;
+      const isPreviousClass = f.className && student.currentClass && f.className !== student.currentClass;
+      return hasRemaining && (isPreviousYear || isPreviousClass) && !currentClassFees.includes(f);
+    });
+
+    // Calculations according to strict financial business rules
+    const joinedDate = activeEnrollment ? new Date(activeEnrollment.joinedDate || activeEnrollment.createdAt) : null;
+    
+    const currentYearPayments = joinedDate
+      ? payments.filter(p => new Date(p.paymentDate || p.createdAt) >= joinedDate)
+      : payments;
+
+    // Payments collected against previous academic year dues during the current year
+    let previousPaidThisYear = 0;
+    const previousFeeIdsSet = new Set(previousClassFees.map(f => f._id.toString()));
+    currentYearPayments.forEach(p => {
+      (p.feeAllocations || []).forEach(alloc => {
+        if (previousFeeIdsSet.has(alloc.studentFeeId?.toString())) {
+          previousPaidThisYear += (alloc.amount || 0);
+        }
+      });
+    });
+
+    // Payments collected against current academic year dues during the current year
+    let currentPaidThisYear = 0;
+    const currentFeeIdsSet = new Set(currentClassFees.map(f => f._id.toString()));
+    currentYearPayments.forEach(p => {
+      (p.feeAllocations || []).forEach(alloc => {
+        if (currentFeeIdsSet.has(alloc.studentFeeId?.toString())) {
+          currentPaidThisYear += (alloc.amount || 0);
+        }
+      });
+    });
+
+    const previousPending = previousClassFees.reduce((sum, f) => sum + (f.remainingAmount || 0), 0);
+    const currentPending = currentClassFees.reduce((sum, f) => sum + (f.remainingAmount || 0), 0);
+    const totalDue = previousPending + currentPending;
+
+    const previousPendingAtPromotion = previousPending + previousPaidThisYear;
+    const currentYearNetFee = currentClassFees.reduce((sum, f) => {
+      const concessionAmount = f.concessionStatus === 'Active' ? (f.lessAmount || 0) : 0;
+      return sum + Math.max(0, (f.totalAmount || 0) - concessionAmount);
+    }, 0);
+    
+    const totalFee = previousPendingAtPromotion + currentYearNetFee;
 
     res.json({
       ...student,
@@ -349,7 +471,13 @@ export const getStudentById = async (req, res) => {
       } : null,
       payments,
       includedCharges,
-      activities
+      activities,
+      previousPending,
+      currentPending,
+      totalDue,
+      totalFee,
+      previousPaid: previousPaidThisYear,
+      currentPaid: currentPaidThisYear
     });
   } catch (error) {
     res.status(500).json({ error: 'Error fetching student details' });
@@ -1162,6 +1290,13 @@ export const removeFeeFromStudent = async (req, res) => {
       return res.status(404).json({ error: 'Fee assignment not found' });
     }
 
+    const student = await Student.findById(studentId);
+    if (student) {
+      if (fee.academicYear !== student.academicYear || fee.className !== student.currentClass) {
+        return res.status(400).json({ error: 'Cannot remove historical fee records belonging to previous academic years or classes.' });
+      }
+    }
+
     if (fee.paidAmount > 0) {
       return res.status(400).json({ error: 'Cannot delete a fee that has already been partially or fully paid' });
     }
@@ -1338,7 +1473,11 @@ export const updateStudent = async (req, res) => {
         const systemCats = await FeeCategory.find({ name: { $in: ['Included Charges', 'Activities', 'Base Fee', 'Full Fees'] } }).session(session);
         const systemCatIds = new Set(systemCats.map(c => c._id.toString()));
 
-        const currentAssignedFees = await StudentFee.find({ studentId: id }).session(session);
+        const currentAssignedFees = await StudentFee.find({
+          studentId: id,
+          className: currentClassName,
+          academicYear: currentAcademicYear
+        }).session(session);
         const previousFeeCatIds = currentAssignedFees
           .map(f => getCatIdStr(f.feeCategoryId))
           .filter(catId => catId && !systemCatIds.has(catId));
@@ -1471,10 +1610,20 @@ export const updateStudent = async (req, res) => {
             }
           }
 
-          const existingFees = await StudentFee.find({ studentId: id, feeCategoryId: catId }).session(session);
+          const existingFees = await StudentFee.find({
+            studentId: id,
+            feeCategoryId: catId,
+            className: currentClassName,
+            academicYear: currentAcademicYear
+          }).session(session);
 
           if (existingFees.length > 0) {
             const primaryFee = existingFees[0];
+            if (primaryFee.academicYear !== currentAcademicYear || primaryFee.className !== currentClassName) {
+              await session.abortTransaction();
+              session.endSession();
+              return res.status(400).json({ error: 'Fee record violation: Cannot mutate historical fee record.' });
+            }
             // RULE 1: Never overwrite StudentFee when paidAmount > 0
             if ((primaryFee.paidAmount || 0) === 0) {
               if (amount > 0) {
@@ -1651,7 +1800,8 @@ export const updateStudent = async (req, res) => {
             performedById: req.user?.id,
             reason: `Removed from student ${currentStudent?.admissionNumber || id}`,
             referenceType: 'Student',
-            referenceId: currentStudent?._id || id
+            referenceId: currentStudent?._id || id,
+            session
           });
         }
 
@@ -1660,7 +1810,8 @@ export const updateStudent = async (req, res) => {
             performedById: req.user?.id,
             reason: `Assigned to student ${currentStudent?.admissionNumber || id}`,
             referenceType: 'Student',
-            referenceId: currentStudent?._id || id
+            referenceId: currentStudent?._id || id,
+            session
           });
         }
       }
@@ -1691,6 +1842,8 @@ export const updateStudent = async (req, res) => {
       }
 
       const syncSpecialFee = async (feeName, amount) => {
+        if (amount === undefined) return;
+
         const effectiveAmount = normalizeNumber(amount, 0);
         let category = await FeeCategory.findOne({ name: feeName }).session(session);
         if (!category) {
@@ -1705,11 +1858,8 @@ export const updateStudent = async (req, res) => {
         const existingFee = await StudentFee.findOne({
           studentId: id,
           feeCategoryId: category._id,
-          $or: [
-            { className: currentClassName },
-            { className: { $exists: false } },
-            { className: null }
-          ]
+          className: currentClassName,
+          academicYear: currentAcademicYear
         }).session(session);
 
         if (effectiveAmount <= 0) {
@@ -1726,6 +1876,9 @@ export const updateStudent = async (req, res) => {
         }
 
         if (existingFee) {
+          if (existingFee.academicYear !== currentAcademicYear || existingFee.className !== currentClassName) {
+            throw new Error(`Fee record violation: Cannot mutate historical fee record (${existingFee.academicYear}/${existingFee.className}).`);
+          }
           // RULE 1: Do not overwrite if paidAmount > 0
           if ((existingFee.paidAmount || 0) === 0) {
             existingFee.totalAmount = effectiveAmount;
@@ -1912,9 +2065,11 @@ export const promoteStudents = async (req, res) => {
 
     let promotedCount = 0;
     let graduatedCount = 0;
+    const failures = [];
 
-    for (const student of students) {
-      try {
+    await Promise.all(
+      students.map(async (student) => {
+        try {
         const nextClass = normalizedClassMapping[normalizeText(student.currentClass)];
 
         if (nextClass) {
@@ -1928,14 +2083,35 @@ export const promoteStudents = async (req, res) => {
             );
 
             graduatedCount++;
-            continue;
+            return;
           }
 
           const oldClassName = student.currentClass;
           const oldAcademicYear = student.academicYear || fromAcademicYear;
 
           // 1. Tag existing unpaid fees as legacy (belonging to old class/year)
-          const unpaidFees = await StudentFee.find({ studentId: student._id, remainingAmount: { $gt: 0 } });
+          const unpaidFees = await StudentFee.find({
+            studentId: student._id,
+            remainingAmount: { $gt: 0 },
+            $and: [
+              {
+                $or: [
+                  { className: oldClassName },
+                  { className: { $exists: false } },
+                  { className: null },
+                  { className: '' }
+                ]
+              },
+              {
+                $or: [
+                  { academicYear: oldAcademicYear },
+                  { academicYear: { $exists: false } },
+                  { academicYear: null },
+                  { academicYear: '' }
+                ]
+              }
+            ]
+          });
           for (const fee of unpaidFees) {
             try {
               fee.className = oldClassName;
@@ -1962,7 +2138,28 @@ export const promoteStudents = async (req, res) => {
           }
 
           // 2. Mark fully paid fees with old class info too (for record keeping)
-          const paidFees = await StudentFee.find({ studentId: student._id, remainingAmount: { $eq: 0 }, className: { $exists: false } });
+          const paidFees = await StudentFee.find({
+            studentId: student._id,
+            remainingAmount: { $eq: 0 },
+            $and: [
+              {
+                $or: [
+                  { className: oldClassName },
+                  { className: { $exists: false } },
+                  { className: null },
+                  { className: '' }
+                ]
+              },
+              {
+                $or: [
+                  { academicYear: oldAcademicYear },
+                  { academicYear: { $exists: false } },
+                  { academicYear: null },
+                  { academicYear: '' }
+                ]
+              }
+            ]
+          });
           for (const fee of paidFees) {
             try {
               fee.className = oldClassName;
@@ -2013,6 +2210,9 @@ export const promoteStudents = async (req, res) => {
           student.studentStatus = 'Active';
           await student.save();
 
+          // 3.5 Assign default fees of the new class/academic year to student
+          await assignClassDefaultFeesToStudent(student);
+
           // 4. Update previous enrollment record to Promoted
           await StudentEnrollment.updateMany(
             { studentId: student._id, academicYearId: fromYearDoc._id, status: 'Active' },
@@ -2038,8 +2238,14 @@ export const promoteStudents = async (req, res) => {
         }
       } catch (studentError) {
         console.error(`Error promoting student ${student.studentName || 'Unknown'} (${student._id}):`, studentError);
+        failures.push({
+          studentName: student.studentName || 'Unknown',
+          admissionNumber: student.admissionNumber || '',
+          error: studentError.message || 'Unknown error'
+        });
       }
-    }
+    })
+  );
 
     // Mark the source year completed and the destination year active so the dashboard reflects the promotion.
     if (fromYearDocResolved.status !== 'Completed') {
@@ -2059,7 +2265,12 @@ export const promoteStudents = async (req, res) => {
       });
     }
 
-    res.json({ message: `Successfully promoted ${promotedCount} students and graduated ${graduatedCount} students.`, promotedCount, graduatedCount });
+    res.json({
+      message: `Successfully promoted ${promotedCount} students.`,
+      promotedCount,
+      graduatedCount,
+      failures
+    });
 
   } catch (error) {
     console.error('Error promoting students:', error);

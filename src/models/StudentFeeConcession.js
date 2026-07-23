@@ -12,7 +12,7 @@ const studentFeeConcessionSchema = new mongoose.Schema({
   lessAmount: { type: Number, required: true },
   reason: { type: String, required: true },
   remarks: { type: String, default: '' },
-  status: { type: String, enum: ['Active', 'Inactive', 'Cancelled'], default: 'Active' },
+  status: { type: String, enum: ['Active', 'Inactive', 'Completed', 'Expired', 'Cancelled'], default: 'Active' },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

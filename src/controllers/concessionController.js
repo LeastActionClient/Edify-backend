@@ -14,6 +14,24 @@ const getConcessionNetPayable = (originalAmount, lessAmount, status) => {
   return Math.max(0, original - discount);
 };
 
+export const syncStudentFeeRemainingAmount = async (studentFeeId) => {
+  if (!studentFeeId) return;
+  const studentFee = await StudentFee.findById(studentFeeId);
+  if (!studentFee) return;
+
+  const activeConcession = await StudentFeeConcession.findOne({
+    studentFeeId: studentFee._id,
+    status: 'Active'
+  });
+
+  const lessAmount = activeConcession ? (activeConcession.lessAmount || 0) : 0;
+  const newRemaining = Math.max(0, (studentFee.totalAmount || 0) - lessAmount - (studentFee.paidAmount || 0));
+
+  studentFee.remainingAmount = newRemaining;
+  await studentFee.save();
+  return newRemaining;
+};
+
 const resolveAcademicYearContext = async ({ academicYear, student, studentFee }) => {
   const enrollment = await StudentEnrollment.findOne({ studentId: student._id, status: 'Active' })
     .select('academicYearId academicYear')
@@ -195,6 +213,12 @@ export const createConcession = async (req, res) => {
         academicYear: academicYearContext.academicYear
       });
 
+      if (studentFee) {
+        if (studentFee.academicYear !== academicYearContext.academicYear || studentFee.className !== student.currentClass) {
+          return res.status(400).json({ error: 'Fee record violation: Cannot mutate historical fee record.' });
+        }
+      }
+
       if (!studentFee) {
         // Resolve default fee config from Class & Section
         const classDoc = await Class.findOne({ name: student.currentClass }).lean();
@@ -296,6 +320,7 @@ export const createConcession = async (req, res) => {
 
 
       results.push(newConcession);
+      await syncStudentFeeRemainingAmount(studentFee._id);
     }
 
     res.status(201).json({
@@ -357,6 +382,7 @@ export const updateConcession = async (req, res) => {
     if (remarks !== undefined) concession.remarks = remarks;
     concession.updatedBy = req.user.id;
     await concession.save();
+    await syncStudentFeeRemainingAmount(studentFee._id);
 
     // Audit log
     await ActivityLog.create({
@@ -393,6 +419,7 @@ export const deleteConcession = async (req, res) => {
     concession.deletedAt = new Date();
     concession.deletedBy = req.user.id;
     await concession.save();
+    await syncStudentFeeRemainingAmount(concession.studentFeeId);
 
     // Audit log
     await ActivityLog.create({
@@ -421,8 +448,15 @@ export const getStudentNetFees = async (req, res) => {
       return res.status(404).json({ error: 'Student not found.' });
     }
 
-    // 1. Fetch all student fees already assigned
-    const studentFees = await StudentFee.find({ studentId })
+    // 1. Fetch student fees already assigned for the current class and academic year
+    const query = { studentId };
+    if (student.currentClass) {
+      query.className = student.currentClass;
+    }
+    if (student.academicYear) {
+      query.academicYear = student.academicYear;
+    }
+    const studentFees = await StudentFee.find(query)
       .populate('feeCategoryId')
       .lean();
 
@@ -569,6 +603,7 @@ export const toggleConcessionStatus = async (req, res) => {
     concession.status = targetStatus;
     concession.updatedBy = req.user.id;
     await concession.save();
+    await syncStudentFeeRemainingAmount(concession.studentFeeId);
 
     // Audit log
     await ActivityLog.create({

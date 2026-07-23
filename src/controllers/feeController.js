@@ -260,16 +260,26 @@ export const assignFeeToStudent = async (req, res) => {
 
     const catDoc = await FeeCategory.findById(feeCategoryId);
 
-    const existingFees = await StudentFee.find({ studentId, feeCategoryId, className: student.currentClass });
+    const existingFees = await StudentFee.find({ 
+      studentId, 
+      feeCategoryId, 
+      className: student.currentClass,
+      academicYear: student.academicYear 
+    });
 
-    if (parseFloat(totalAmount) <= 0) {
+    if (totalAmount !== undefined && parseFloat(totalAmount) <= 0) {
       if (existingFees.length > 0) {
         for (const f of existingFees) {
           if (f.paidAmount > 0) {
             return res.status(400).json({ error: 'Cannot remove fee that has partial payments.' });
           }
         }
-        await StudentFee.deleteMany({ studentId, feeCategoryId });
+        await StudentFee.deleteMany({ 
+          studentId, 
+          feeCategoryId, 
+          className: student.currentClass,
+          academicYear: student.academicYear 
+        });
         return res.status(200).json({ message: 'Fee removed successfully' });
       } else {
         return res.status(200).json({ message: 'No fee to remove' });
@@ -278,6 +288,9 @@ export const assignFeeToStudent = async (req, res) => {
 
     if (existingFees.length > 0) {
       let studentFee = existingFees[0];
+      if (studentFee.academicYear !== student.academicYear || studentFee.className !== student.currentClass) {
+        return res.status(400).json({ error: 'Fee record violation: Cannot mutate historical fee record.' });
+      }
       if (studentFee.paidAmount > 0 && Math.abs(studentFee.totalAmount - parseFloat(totalAmount)) > 0.01) {
         return res.status(400).json({ error: 'Cannot modify fee amount because payments have already been recorded for this fee.' });
       }

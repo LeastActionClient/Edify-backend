@@ -563,6 +563,13 @@ export const createPayment = async (req, res) => {
       }
     }
 
+    const student = await Student.findById(studentId).session(session);
+    if (!student) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
     const unpaidFees = await StudentFee.find({ _id: { $in: resolvedFeeIds }, studentId })
       .populate('feeCategoryId')
       .session(session);
@@ -573,6 +580,16 @@ export const createPayment = async (req, res) => {
       return res.status(404).json({ error: 'Some fee records were not found or do not belong to this student' });
     }
 
+    // Sort unpaidFees to ensure previous year pending fees are cleared first (Business Rule 9)
+    unpaidFees.sort((a, b) => {
+      const aIsPrev = (a.academicYear && student.academicYear && a.academicYear !== student.academicYear) || (!a.academicYear && a.className && student.currentClass && a.className !== student.currentClass);
+      const bIsPrev = (b.academicYear && student.academicYear && b.academicYear !== student.academicYear) || (!b.academicYear && b.className && student.currentClass && b.className !== student.currentClass);
+      
+      if (aIsPrev && !bIsPrev) return -1;
+      if (!aIsPrev && bIsPrev) return 1;
+      return 0;
+    });
+
     // Load active/inactive concessions for these fees
     const concessions = await StudentFeeConcession.find({
       studentFeeId: { $in: resolvedFeeIds },
@@ -581,21 +598,11 @@ export const createPayment = async (req, res) => {
 
     const concessionMap = new Map(concessions.map(c => [c.studentFeeId.toString(), c]));
 
-    // Adjust the remaining amounts in memory for total validation and allocation
+    // Use DB remainingAmount directly as the single source of truth
     unpaidFees.forEach(fee => {
       const concession = concessionMap.get(fee._id.toString());
       fee.originalRemainingAmount = fee.remainingAmount;
-      if (concession) {
-        fee.lessAmount = concession.lessAmount;
-        if (EFFECTIVE_CONCESSION_STATUSES.has(concession.status)) {
-          fee.remainingAmount = Math.max(0, fee.totalAmount - concession.lessAmount - fee.paidAmount);
-        } else {
-          fee.remainingAmount = Math.max(0, fee.totalAmount - fee.paidAmount);
-        }
-      } else {
-        fee.lessAmount = 0;
-        fee.remainingAmount = Math.max(0, fee.totalAmount - fee.paidAmount);
-      }
+      fee.lessAmount = concession ? (concession.lessAmount || 0) : 0;
     });
 
     let finalAmount = amount;
@@ -708,7 +715,7 @@ export const createPayment = async (req, res) => {
       remarks,
       status: finalAmount >= totalRemaining ? 'PAID' : 'PARTIAL',
       inventoryProcessed: false,
-      recordedById: req.user.id
+      recordedById: req.user?.id || req.user?._id || null
     }], { session });
     
     // Deduct stock atomically and set inventoryProcessed flag
@@ -741,7 +748,7 @@ export const createPayment = async (req, res) => {
               action: 'ASSIGNED',
               referenceType: 'Payment',
               referenceId: payment._id,
-              updatedBy: req.user.id
+              updatedBy: req.user?.id || req.user?._id || req.user?.userId || null
             }], { session });
           } else {
             const updatedCat = await FeeCategory.findOneAndUpdate(
@@ -765,7 +772,7 @@ export const createPayment = async (req, res) => {
               action: 'ASSIGNED',
               referenceType: 'Payment',
               referenceId: payment._id,
-              updatedBy: req.user.id
+              updatedBy: req.user?.id || req.user?._id || req.user?.userId || null
             }], { session });
           }
 
@@ -787,7 +794,7 @@ export const createPayment = async (req, res) => {
     }], { session });
     
     await ActivityLog.create([{
-      userId: req.user.id,
+      userId: req.user?.id || req.user?._id || req.user?.userId || null,
       action: 'CREATED_PAYMENT',
       details: `Payment of ${finalAmount} recorded for student ${studentId} covering multiple fees`
     }], { session });
@@ -988,7 +995,7 @@ export const deletePayment = async (req, res) => {
                   action: 'REMOVED',
                   referenceType: 'Payment',
                   referenceId: payment._id,
-                  updatedBy: req.user?.id
+                  updatedBy: req.user?.id || req.user?._id || req.user?.userId || null
                 });
 
                 await StudentFee.findByIdAndUpdate(studentFee._id, {
