@@ -422,8 +422,8 @@ const getInvoicePaymentData = async (id) => {
     Payment.findById(id)
       .populate('studentId', 'studentName admissionNumber currentClass section academicYear studentStatus fatherPhone motherPhone whatsappNumber emisNo emisNumber guardianName guardian')
       .populate('applicationId', 'studentName applicationId applyingClass status feePaid feeAmount feePaidDate')
-      .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock' } })
-      .populate({ path: 'feeAllocations.studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock' } })
+      .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock topStock bottomStock' } })
+      .populate({ path: 'feeAllocations.studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock topStock bottomStock' } })
       .populate('recordedById', 'username')
       .lean(),
     Invoice.findOne({ paymentId: id }).select('invoiceNumber paymentId studentId generatedDate createdAt updatedAt').lean()
@@ -571,6 +571,13 @@ export const createPayment = async (req, res) => {
       }
     }
 
+    const student = await Student.findById(studentId).session(session);
+    if (!student) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
     const unpaidFees = await StudentFee.find({ _id: { $in: resolvedFeeIds }, studentId })
       .populate('feeCategoryId')
       .session(session);
@@ -581,6 +588,16 @@ export const createPayment = async (req, res) => {
       return res.status(404).json({ error: 'Some fee records were not found or do not belong to this student' });
     }
 
+    // Sort unpaidFees to ensure previous year pending fees are cleared first (Business Rule 9)
+    unpaidFees.sort((a, b) => {
+      const aIsPrev = (a.academicYear && student.academicYear && a.academicYear !== student.academicYear) || (!a.academicYear && a.className && student.currentClass && a.className !== student.currentClass);
+      const bIsPrev = (b.academicYear && student.academicYear && b.academicYear !== student.academicYear) || (!b.academicYear && b.className && student.currentClass && b.className !== student.currentClass);
+      
+      if (aIsPrev && !bIsPrev) return -1;
+      if (!aIsPrev && bIsPrev) return 1;
+      return 0;
+    });
+
     // Load active/inactive concessions for these fees
     const concessions = await StudentFeeConcession.find({
       studentFeeId: { $in: resolvedFeeIds },
@@ -589,21 +606,11 @@ export const createPayment = async (req, res) => {
 
     const concessionMap = new Map(concessions.map(c => [c.studentFeeId.toString(), c]));
 
-    // Adjust the remaining amounts in memory for total validation and allocation
+    // Use DB remainingAmount directly as the single source of truth
     unpaidFees.forEach(fee => {
       const concession = concessionMap.get(fee._id.toString());
       fee.originalRemainingAmount = fee.remainingAmount;
-      if (concession) {
-        fee.lessAmount = concession.lessAmount;
-        if (EFFECTIVE_CONCESSION_STATUSES.has(concession.status)) {
-          fee.remainingAmount = Math.max(0, fee.totalAmount - concession.lessAmount - fee.paidAmount);
-        } else {
-          fee.remainingAmount = Math.max(0, fee.totalAmount - fee.paidAmount);
-        }
-      } else {
-        fee.lessAmount = 0;
-        fee.remainingAmount = Math.max(0, fee.totalAmount - fee.paidAmount);
-      }
+      fee.lessAmount = concession ? (concession.lessAmount || 0) : 0;
     });
 
     let finalAmount = amount;
@@ -716,7 +723,7 @@ export const createPayment = async (req, res) => {
       remarks,
       status: finalAmount >= totalRemaining ? 'PAID' : 'PARTIAL',
       inventoryProcessed: false,
-      recordedById: req.user.id
+      recordedById: req.user?.id || req.user?._id || null
     }], { session });
     
     // Deduct stock atomically and set inventoryProcessed flag
@@ -724,30 +731,58 @@ export const createPayment = async (req, res) => {
       const studentFee = unpaidFees.find(f => f._id.toString() === alloc.studentFeeId.toString());
       if (studentFee && studentFee.feeCategoryId) {
         const cat = await FeeCategory.findById(studentFee.feeCategoryId).session(session);
-        if (cat && cat.isStockItem) {
-          const updatedCat = await FeeCategory.findOneAndUpdate(
-            { _id: cat._id, currentStock: { $gte: 1 } },
-            { $inc: { currentStock: -1 } },
-            { new: true, session }
-          );
+        if (cat && cat.isStockItem && !studentFee.isStockDeducted) {
+          if (cat.name.toLowerCase() === 'uniform') {
+            const topLen = parseFloat(studentFee.uniformDetails?.topLength || 0);
+            const bottomLen = parseFloat(studentFee.uniformDetails?.bottomLength || 0);
+            const updatedCat = await FeeCategory.findOneAndUpdate(
+              { _id: cat._id, topStock: { $gte: topLen }, bottomStock: { $gte: bottomLen } },
+              { $inc: { topStock: -topLen, bottomStock: -bottomLen } },
+              { new: true, session }
+            );
 
-          if (!updatedCat) {
-            await session.abortTransaction();
-            session.endSession();
-            return res.status(400).json({ error: `Insufficient stock for ${cat.name}. Stock was depleted by a concurrent transaction.` });
+            if (!updatedCat) {
+              await session.abortTransaction();
+              session.endSession();
+              return res.status(400).json({ error: `Insufficient stock for ${cat.name} (Top needed: ${topLen}m, Bottom needed: ${bottomLen}m).` });
+            }
+
+            await StockHistory.create([{
+              categoryId: cat._id,
+              categoryName: cat.name,
+              previousStock: (updatedCat.topStock + topLen) + (updatedCat.bottomStock + bottomLen),
+              updatedStock: updatedCat.topStock + updatedCat.bottomStock,
+              difference: -(topLen + bottomLen),
+              action: 'ASSIGNED',
+              referenceType: 'Payment',
+              referenceId: payment._id,
+              updatedBy: req.user?.id || req.user?._id || req.user?.userId || null
+            }], { session });
+          } else {
+            const updatedCat = await FeeCategory.findOneAndUpdate(
+              { _id: cat._id, currentStock: { $gte: 1 } },
+              { $inc: { currentStock: -1 } },
+              { new: true, session }
+            );
+
+            if (!updatedCat) {
+              await session.abortTransaction();
+              session.endSession();
+              return res.status(400).json({ error: `Insufficient stock for ${cat.name}. Stock was depleted by a concurrent transaction.` });
+            }
+
+            await StockHistory.create([{
+              categoryId: cat._id,
+              categoryName: cat.name,
+              previousStock: updatedCat.currentStock + 1,
+              updatedStock: updatedCat.currentStock,
+              difference: -1,
+              action: 'ASSIGNED',
+              referenceType: 'Payment',
+              referenceId: payment._id,
+              updatedBy: req.user?.id || req.user?._id || req.user?.userId || null
+            }], { session });
           }
-
-          await StockHistory.create([{
-            categoryId: cat._id,
-            categoryName: cat.name,
-            previousStock: updatedCat.currentStock + 1,
-            updatedStock: updatedCat.currentStock,
-            difference: -1,
-            action: 'ASSIGNED',
-            referenceType: 'Payment',
-            referenceId: payment._id,
-            updatedBy: req.user.id
-          }], { session });
 
           await StudentFee.findByIdAndUpdate(studentFee._id, {
             isStockDeducted: true
@@ -767,7 +802,7 @@ export const createPayment = async (req, res) => {
     }], { session });
     
     await ActivityLog.create([{
-      userId: req.user.id,
+      userId: req.user?.id || req.user?._id || req.user?.userId || null,
       action: 'CREATED_PAYMENT',
       details: `Payment of ${finalAmount} recorded for student ${studentId} covering multiple fees`
     }], { session });
@@ -789,8 +824,8 @@ export const getPaymentHistory = async (req, res) => {
     const payments = await Payment.find()
       .populate('studentId', 'studentName admissionNumber currentClass section academicYear studentStatus')
       .populate('applicationId', 'studentName applicationId applyingClass status')
-      .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock' } })
-      .populate({ path: 'feeAllocations.studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock' } })
+      .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock topStock bottomStock' } })
+      .populate({ path: 'feeAllocations.studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock topStock bottomStock' } })
       .populate('recordedById', 'username')
       .sort({ paymentDate: -1 })
       .lean();
@@ -947,28 +982,32 @@ export const deletePayment = async (req, res) => {
         if (studentFee && studentFee.feeCategoryId) {
           const cat = await FeeCategory.findById(studentFee.feeCategoryId);
           if (cat && cat.isStockItem) {
-            const updatedCat = await FeeCategory.findOneAndUpdate(
-              { _id: cat._id },
-              { $inc: { currentStock: 1 } },
-              { new: true }
-            );
+            if (cat.name.toLowerCase() === 'uniform') {
+              // Uniform stock is handled upon student details assignment, so deleting a payment does not restore stock.
+            } else {
+              const updatedCat = await FeeCategory.findOneAndUpdate(
+                { _id: cat._id },
+                { $inc: { currentStock: 1 } },
+                { new: true }
+              );
 
-            if (updatedCat) {
-              await StockHistory.create({
-                categoryId: cat._id,
-                categoryName: cat.name,
-                previousStock: updatedCat.currentStock - 1,
-                updatedStock: updatedCat.currentStock,
-                difference: 1,
-                action: 'REMOVED',
-                referenceType: 'Payment',
-                referenceId: payment._id,
-                updatedBy: req.user?.id
-              });
+              if (updatedCat) {
+                await StockHistory.create({
+                  categoryId: cat._id,
+                  categoryName: cat.name,
+                  previousStock: updatedCat.currentStock - 1,
+                  updatedStock: updatedCat.currentStock,
+                  difference: 1,
+                  action: 'REMOVED',
+                  referenceType: 'Payment',
+                  referenceId: payment._id,
+                  updatedBy: req.user?.id || req.user?._id || req.user?.userId || null
+                });
 
-              await StudentFee.findByIdAndUpdate(studentFee._id, {
-                isStockDeducted: false
-              });
+                await StudentFee.findByIdAndUpdate(studentFee._id, {
+                  isStockDeducted: false
+                });
+              }
             }
           }
         }

@@ -5,7 +5,9 @@ const feeCategorySchema = new mongoose.Schema({
   isEnabled: { type: Boolean, default: true },
   mandatory: { type: Boolean, default: false },
   isStockItem: { type: Boolean, default: false },
-  currentStock: { type: Number, default: 0 }
+  currentStock: { type: Number, default: 0 },
+  topStock: { type: Number, default: 0 },
+  bottomStock: { type: Number, default: 0 }
 }, { timestamps: true });
 
 feeCategorySchema.index({ isEnabled: 1, name: 1 });

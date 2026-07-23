@@ -64,8 +64,16 @@ export const assignClassDefaultFeesToStudent = async (student, session = null) =
 
         if (amount > 0) {
           baseFeeTotal += amount;
-          const existing = await StudentFee.findOne({ studentId, feeCategoryId: catId }).session(session);
+          const existing = await StudentFee.findOne({
+            studentId,
+            feeCategoryId: catId,
+            className: currentClass,
+            academicYear: student.academicYear
+          }).session(session);
           if (existing) {
+            if (existing.academicYear !== student.academicYear || existing.className !== currentClass) {
+              throw new Error(`Fee record violation: Cannot mutate historical fee record (${existing.academicYear}/${existing.className}).`);
+            }
             existing.totalAmount = amount;
             existing.remainingAmount = Math.max(0, amount - existing.paidAmount);
             await existing.save(session ? { session } : undefined);
@@ -75,7 +83,9 @@ export const assignClassDefaultFeesToStudent = async (student, session = null) =
               feeCategoryId: catId,
               totalAmount: amount,
               remainingAmount: amount,
-              paidAmount: 0
+              paidAmount: 0,
+              className: currentClass,
+              academicYear: student.academicYear
             };
             if (session) {
               await StudentFee.create([feePayload], { session });
@@ -109,23 +119,25 @@ export const getStudents = async (req, res) => {
       .lean();
 
     const studentIds = students.map(s => s._id);
-    const [studentFees, concessions] = await Promise.all([
+    const [studentFees, concessions, payments, enrollments] = await Promise.all([
       StudentFee.find({ studentId: { $in: studentIds } })
         .select('studentId feeCategoryId totalAmount paidAmount remainingAmount academicYear className uniformDetails isStockDeducted createdAt updatedAt')
-        .populate('feeCategoryId', 'name amount mandatory pricing isStockItem currentStock')
+        .populate('feeCategoryId', 'name amount mandatory pricing isStockItem currentStock topStock bottomStock')
         .lean(),
       StudentFeeConcession.find({
         studentId: { $in: studentIds },
         status: { $in: ['Active', 'Inactive'] }
       })
         .select('studentId studentFeeId lessAmount status')
+        .lean(),
+      Payment.find({ studentId: { $in: studentIds } })
+        .select('studentId paymentDate feeAllocations amount createdAt')
+        .lean(),
+      StudentEnrollment.find({ studentId: { $in: studentIds } })
+        .select('studentId academicYearId academicYear classId className sectionId sectionName status joinedDate promotedDate createdAt updatedAt')
+        .sort({ joinedDate: 1, createdAt: 1 })
         .lean()
     ]);
-
-    const enrollments = await StudentEnrollment.find({ studentId: { $in: studentIds } })
-      .select('studentId academicYearId academicYear classId className sectionId sectionName status joinedDate promotedDate createdAt updatedAt')
-      .sort({ joinedDate: 1, createdAt: 1 })
-      .lean();
 
     const concessionMap = new Map();
     concessions.forEach(c => {
@@ -137,6 +149,13 @@ export const getStudents = async (req, res) => {
       const sid = enrollment.studentId.toString();
       if (!enrollmentMap.has(sid)) enrollmentMap.set(sid, []);
       enrollmentMap.get(sid).push(enrollment);
+    });
+
+    const paymentMap = new Map();
+    payments.forEach(p => {
+      const sid = p.studentId.toString();
+      if (!paymentMap.has(sid)) paymentMap.set(sid, []);
+      paymentMap.get(sid).push(p);
     });
 
     const feeMap = {};
@@ -168,12 +187,61 @@ export const getStudents = async (req, res) => {
       const activeEnrollment = studentEnrollments.find(enrollment => enrollment.status === 'Active')
         || studentEnrollments[studentEnrollments.length - 1]
         || null;
-      const currentClassFees = allFees.filter(f =>
-        f.className === s.currentClass || (!f.className && !f.academicYear)
-      );
-      const previousClassFees = allFees.filter(f =>
-        f.className && f.className !== s.currentClass
-      );
+      const currentClassFees = allFees.filter(f => {
+        if (f.academicYear && s.academicYear) {
+          return f.academicYear === s.academicYear;
+        }
+        return f.className === s.currentClass || (!f.className && !f.academicYear);
+      });
+
+      const previousClassFees = allFees.filter(f => {
+        const hasRemaining = (f.remainingAmount || 0) > 0;
+        const isPreviousYear = f.academicYear && s.academicYear && f.academicYear !== s.academicYear;
+        const isPreviousClass = f.className && s.currentClass && f.className !== s.currentClass;
+        return hasRemaining && (isPreviousYear || isPreviousClass) && !currentClassFees.includes(f);
+      });
+
+      // Calculations according to strict financial business rules
+      const joinedDate = activeEnrollment ? new Date(activeEnrollment.joinedDate || activeEnrollment.createdAt) : null;
+      const studentPayments = paymentMap.get(s._id.toString()) || [];
+      
+      const currentYearPayments = joinedDate
+        ? studentPayments.filter(p => new Date(p.paymentDate || p.createdAt) >= joinedDate)
+        : studentPayments;
+
+      // Payments collected against previous academic year dues during the current year
+      let previousPaidThisYear = 0;
+      const previousFeeIdsSet = new Set(previousClassFees.map(f => f._id.toString()));
+      currentYearPayments.forEach(p => {
+        (p.feeAllocations || []).forEach(alloc => {
+          if (previousFeeIdsSet.has(alloc.studentFeeId?.toString())) {
+            previousPaidThisYear += (alloc.amount || 0);
+          }
+        });
+      });
+
+      // Payments collected against current academic year dues during the current year
+      let currentPaidThisYear = 0;
+      const currentFeeIdsSet = new Set(currentClassFees.map(f => f._id.toString()));
+      currentYearPayments.forEach(p => {
+        (p.feeAllocations || []).forEach(alloc => {
+          if (currentFeeIdsSet.has(alloc.studentFeeId?.toString())) {
+            currentPaidThisYear += (alloc.amount || 0);
+          }
+        });
+      });
+
+      const previousPending = previousClassFees.reduce((sum, f) => sum + (f.remainingAmount || 0), 0);
+      const currentPending = currentClassFees.reduce((sum, f) => sum + (f.remainingAmount || 0), 0);
+      const totalDue = previousPending + currentPending;
+
+      const previousPendingAtPromotion = previousPending + previousPaidThisYear;
+      const currentYearNetFee = currentClassFees.reduce((sum, f) => {
+        const concessionAmount = f.concessionStatus === 'Active' ? (f.lessAmount || 0) : 0;
+        return sum + Math.max(0, (f.totalAmount || 0) - concessionAmount);
+      }, 0);
+      
+      const totalFee = previousPendingAtPromotion + currentYearNetFee;
 
       return {
         ...s,
@@ -189,7 +257,13 @@ export const getStudents = async (req, res) => {
           joinedDate: activeEnrollment.joinedDate,
           promotedDate: activeEnrollment.promotedDate,
           createdAt: activeEnrollment.createdAt
-        } : null
+        } : null,
+        previousPending,
+        currentPending,
+        totalDue,
+        totalFee,
+        previousPaid: previousPaidThisYear,
+        currentPaid: currentPaidThisYear
       };
     });
 
@@ -215,7 +289,7 @@ export const getStudentById = async (req, res) => {
     const [studentFeesRaw, concessions, payments, includedCharges, activities] = await Promise.all([
       StudentFee.find({ studentId: id })
         .select('studentId feeCategoryId totalAmount paidAmount remainingAmount academicYear className uniformDetails isStockDeducted createdAt updatedAt')
-        .populate('feeCategoryId', 'name amount mandatory pricing isStockItem currentStock')
+        .populate('feeCategoryId', 'name amount mandatory pricing isStockItem currentStock topStock bottomStock')
         .lean(),
       StudentFeeConcession.find({
         studentId: id,
@@ -325,12 +399,60 @@ export const getStudentById = async (req, res) => {
       || enrollments[enrollments.length - 1]
       || null;
 
-    const currentClassFees = studentFees.filter(f =>
-      f.className === student.currentClass || (!f.className && !f.academicYear)
-    );
-    const previousClassFees = studentFees.filter(f =>
-      f.className && f.className !== student.currentClass
-    );
+    const currentClassFees = studentFees.filter(f => {
+      if (f.academicYear && student.academicYear) {
+        return f.academicYear === student.academicYear;
+      }
+      return f.className === student.currentClass || (!f.className && !f.academicYear);
+    });
+
+    const previousClassFees = studentFees.filter(f => {
+      const hasRemaining = (f.remainingAmount || 0) > 0;
+      const isPreviousYear = f.academicYear && student.academicYear && f.academicYear !== student.academicYear;
+      const isPreviousClass = f.className && student.currentClass && f.className !== student.currentClass;
+      return hasRemaining && (isPreviousYear || isPreviousClass) && !currentClassFees.includes(f);
+    });
+
+    // Calculations according to strict financial business rules
+    const joinedDate = activeEnrollment ? new Date(activeEnrollment.joinedDate || activeEnrollment.createdAt) : null;
+    
+    const currentYearPayments = joinedDate
+      ? payments.filter(p => new Date(p.paymentDate || p.createdAt) >= joinedDate)
+      : payments;
+
+    // Payments collected against previous academic year dues during the current year
+    let previousPaidThisYear = 0;
+    const previousFeeIdsSet = new Set(previousClassFees.map(f => f._id.toString()));
+    currentYearPayments.forEach(p => {
+      (p.feeAllocations || []).forEach(alloc => {
+        if (previousFeeIdsSet.has(alloc.studentFeeId?.toString())) {
+          previousPaidThisYear += (alloc.amount || 0);
+        }
+      });
+    });
+
+    // Payments collected against current academic year dues during the current year
+    let currentPaidThisYear = 0;
+    const currentFeeIdsSet = new Set(currentClassFees.map(f => f._id.toString()));
+    currentYearPayments.forEach(p => {
+      (p.feeAllocations || []).forEach(alloc => {
+        if (currentFeeIdsSet.has(alloc.studentFeeId?.toString())) {
+          currentPaidThisYear += (alloc.amount || 0);
+        }
+      });
+    });
+
+    const previousPending = previousClassFees.reduce((sum, f) => sum + (f.remainingAmount || 0), 0);
+    const currentPending = currentClassFees.reduce((sum, f) => sum + (f.remainingAmount || 0), 0);
+    const totalDue = previousPending + currentPending;
+
+    const previousPendingAtPromotion = previousPending + previousPaidThisYear;
+    const currentYearNetFee = currentClassFees.reduce((sum, f) => {
+      const concessionAmount = f.concessionStatus === 'Active' ? (f.lessAmount || 0) : 0;
+      return sum + Math.max(0, (f.totalAmount || 0) - concessionAmount);
+    }, 0);
+    
+    const totalFee = previousPendingAtPromotion + currentYearNetFee;
 
     res.json({
       ...student,
@@ -349,7 +471,13 @@ export const getStudentById = async (req, res) => {
       } : null,
       payments,
       includedCharges,
-      activities
+      activities,
+      previousPending,
+      currentPending,
+      totalDue,
+      totalFee,
+      previousPaid: previousPaidThisYear,
+      currentPaid: currentPaidThisYear
     });
   } catch (error) {
     res.status(500).json({ error: 'Error fetching student details' });
@@ -509,7 +637,9 @@ const validateStudentInput = (data) => {
   // WhatsApp Number Validation (Optional)
   const wPhone = (whatsappNumber || '').trim();
   if (wPhone) {
-    if (!/^[5-9]\d{9}$/.test(wPhone)) {
+    const isMasked = /[*Xx]/.test(wPhone);
+    const isValid = isMasked ? /^[0-9*Xx]{10}$/.test(wPhone) : /^[5-9]\d{9}$/.test(wPhone);
+    if (!isValid) {
       return 'WhatsApp Number must be exactly 10 digits and start with 5, 6, 7, 8, or 9.';
     }
   }
@@ -517,8 +647,8 @@ const validateStudentInput = (data) => {
   // Father Occupation Validation (Optional)
   const fOcc = (fatherOccupation || '').trim();
   if (fOcc) {
-    if (!/^[a-zA-Z\s]+$/.test(fOcc)) {
-      return 'Father Occupation must contain only alphabets and spaces.';
+    if (!/^[a-zA-Z\s\-./()&,]+$/.test(fOcc)) {
+      return 'Father Occupation must contain only alphabets, spaces, and common characters (- . / ( ) & ,).';
     }
     if (fOcc.length > 100) {
       return 'Father Occupation must not exceed 100 characters.';
@@ -528,8 +658,8 @@ const validateStudentInput = (data) => {
   // Mother Occupation Validation (Optional)
   const mOcc = (motherOccupation || '').trim();
   if (mOcc) {
-    if (!/^[a-zA-Z\s]+$/.test(mOcc)) {
-      return 'Mother Occupation must contain only alphabets and spaces.';
+    if (!/^[a-zA-Z\s\-./()&,]+$/.test(mOcc)) {
+      return 'Mother Occupation must contain only alphabets, spaces, and common characters (- . / ( ) & ,).';
     }
     if (mOcc.length > 100) {
       return 'Mother Occupation must not exceed 100 characters.';
@@ -539,8 +669,8 @@ const validateStudentInput = (data) => {
   // Caste Validation (Optional)
   const casteVal = (caste || '').trim();
   if (casteVal) {
-    if (!/^[a-zA-Z\s]+$/.test(casteVal)) {
-      return 'Caste must contain only alphabets and spaces.';
+    if (!/^[a-zA-Z\s\-./]+$/.test(casteVal)) {
+      return 'Caste must contain only alphabets, spaces, hyphens, dots, and slashes.';
     }
     if (casteVal.length > 50) {
       return 'Caste must not exceed 50 characters.';
@@ -1092,20 +1222,41 @@ export const deleteStudent = async (req, res) => {
       if (sf.feeCategoryId && sf.isStockDeducted) {
         const cat = await FeeCategory.findById(sf.feeCategoryId);
         if (cat && cat.isStockItem) {
-          const prev = cat.currentStock || 0;
-          cat.currentStock = prev + 1;
-          await cat.save();
-          await StockHistory.create({
-            categoryId: cat._id,
-            categoryName: cat.name,
-            previousStock: prev,
-            updatedStock: prev + 1,
-            difference: 1,
-            action: 'STUDENT_DELETION',
-            referenceType: 'Student',
-            referenceId: id,
-            updatedBy: req.user?.id
-          });
+          if (cat.name.toLowerCase() === 'uniform') {
+            const topLen = parseFloat(sf.uniformDetails?.topLength || 0);
+            const bottomLen = parseFloat(sf.uniformDetails?.bottomLength || 0);
+            const prevTop = cat.topStock || 0;
+            const prevBottom = cat.bottomStock || 0;
+            cat.topStock = prevTop + topLen;
+            cat.bottomStock = prevBottom + bottomLen;
+            await cat.save();
+            await StockHistory.create({
+              categoryId: cat._id,
+              categoryName: cat.name,
+              previousStock: prevTop + prevBottom,
+              updatedStock: prevTop + prevBottom + topLen + bottomLen,
+              difference: topLen + bottomLen,
+              action: 'STUDENT_DELETION',
+              referenceType: 'Student',
+              referenceId: id,
+              updatedBy: req.user?.id
+            });
+          } else {
+            const prev = cat.currentStock || 0;
+            cat.currentStock = prev + 1;
+            await cat.save();
+            await StockHistory.create({
+              categoryId: cat._id,
+              categoryName: cat.name,
+              previousStock: prev,
+              updatedStock: prev + 1,
+              difference: 1,
+              action: 'STUDENT_DELETION',
+              referenceType: 'Student',
+              referenceId: id,
+              updatedBy: req.user?.id
+            });
+          }
         }
       }
     }
@@ -1139,6 +1290,13 @@ export const removeFeeFromStudent = async (req, res) => {
       return res.status(404).json({ error: 'Fee assignment not found' });
     }
 
+    const student = await Student.findById(studentId);
+    if (student) {
+      if (fee.academicYear !== student.academicYear || fee.className !== student.currentClass) {
+        return res.status(400).json({ error: 'Cannot remove historical fee records belonging to previous academic years or classes.' });
+      }
+    }
+
     if (fee.paidAmount > 0) {
       return res.status(400).json({ error: 'Cannot delete a fee that has already been partially or fully paid' });
     }
@@ -1146,20 +1304,41 @@ export const removeFeeFromStudent = async (req, res) => {
     if (fee.feeCategoryId && fee.isStockDeducted) {
       const cat = await FeeCategory.findById(fee.feeCategoryId);
       if (cat && cat.isStockItem) {
-        const prev = cat.currentStock || 0;
-        cat.currentStock = prev + 1;
-        await cat.save();
-        await StockHistory.create({
-          categoryId: cat._id,
-          categoryName: cat.name,
-          previousStock: prev,
-          updatedStock: prev + 1,
-          difference: 1,
-          action: 'STUDENT_REMOVAL',
-          referenceType: 'Student',
-          referenceId: studentId,
-          updatedBy: req.user?.id
-        });
+        if (cat.name.toLowerCase() === 'uniform') {
+          const topLen = parseFloat(fee.uniformDetails?.topLength || 0);
+          const bottomLen = parseFloat(fee.uniformDetails?.bottomLength || 0);
+          const prevTop = cat.topStock || 0;
+          const prevBottom = cat.bottomStock || 0;
+          cat.topStock = prevTop + topLen;
+          cat.bottomStock = prevBottom + bottomLen;
+          await cat.save();
+          await StockHistory.create({
+            categoryId: cat._id,
+            categoryName: cat.name,
+            previousStock: prevTop + prevBottom,
+            updatedStock: prevTop + prevBottom + topLen + bottomLen,
+            difference: topLen + bottomLen,
+            action: 'STUDENT_REMOVAL',
+            referenceType: 'Student',
+            referenceId: studentId,
+            updatedBy: req.user?.id
+          });
+        } else {
+          const prev = cat.currentStock || 0;
+          cat.currentStock = prev + 1;
+          await cat.save();
+          await StockHistory.create({
+            categoryId: cat._id,
+            categoryName: cat.name,
+            previousStock: prev,
+            updatedStock: prev + 1,
+            difference: 1,
+            action: 'STUDENT_REMOVAL',
+            referenceType: 'Student',
+            referenceId: studentId,
+            updatedBy: req.user?.id
+          });
+        }
       }
     }
 
@@ -1294,7 +1473,11 @@ export const updateStudent = async (req, res) => {
         const systemCats = await FeeCategory.find({ name: { $in: ['Included Charges', 'Activities', 'Base Fee', 'Full Fees'] } }).session(session);
         const systemCatIds = new Set(systemCats.map(c => c._id.toString()));
 
-        const currentAssignedFees = await StudentFee.find({ studentId: id }).session(session);
+        const currentAssignedFees = await StudentFee.find({
+          studentId: id,
+          className: currentClassName,
+          academicYear: currentAcademicYear
+        }).session(session);
         const previousFeeCatIds = currentAssignedFees
           .map(f => getCatIdStr(f.feeCategoryId))
           .filter(catId => catId && !systemCatIds.has(catId));
@@ -1325,6 +1508,50 @@ export const updateStudent = async (req, res) => {
               });
             }
 
+            if (existingFee.isStockDeducted) {
+              const cat = await FeeCategory.findById(catId).session(session);
+              if (cat && cat.isStockItem) {
+                if (cat.name.toLowerCase() === 'uniform') {
+                  const topLen = parseFloat(existingFee.uniformDetails?.topLength || 0);
+                  const bottomLen = parseFloat(existingFee.uniformDetails?.bottomLength || 0);
+                  const prevTop = cat.topStock || 0;
+                  const prevBottom = cat.bottomStock || 0;
+                  cat.topStock = prevTop + topLen;
+                  cat.bottomStock = prevBottom + bottomLen;
+                  await cat.save({ session });
+
+                  await StockHistory.create([{
+                    categoryId: cat._id,
+                    categoryName: cat.name,
+                    previousStock: prevTop + prevBottom,
+                    updatedStock: prevTop + prevBottom + topLen + bottomLen,
+                    difference: topLen + bottomLen,
+                    details: `Removed student assignment: top: ${topLen}m, bottom: ${bottomLen}m`,
+                    action: 'REMOVED',
+                    referenceType: 'Student',
+                    referenceId: id,
+                    updatedBy: req.user?.id
+                  }], { session });
+                } else {
+                  const prev = cat.currentStock || 0;
+                  cat.currentStock = prev + 1;
+                  await cat.save({ session });
+
+                  await StockHistory.create([{
+                    categoryId: cat._id,
+                    categoryName: cat.name,
+                    previousStock: prev,
+                    updatedStock: prev + 1,
+                    difference: 1,
+                    action: 'REMOVED',
+                    referenceType: 'Student',
+                    referenceId: id,
+                    updatedBy: req.user?.id
+                  }], { session });
+                }
+              }
+            }
+
             await StudentFee.findByIdAndDelete(existingFee._id, { session });
           }
         }
@@ -1337,10 +1564,20 @@ export const updateStudent = async (req, res) => {
           for (const catId of addedFeeCatIds) {
             const cat = await FeeCategory.findById(catId).session(session);
             if (cat && cat.isStockItem) {
-              if ((cat.currentStock || 0) <= 0) {
-                await session.abortTransaction();
-                session.endSession();
-                return res.status(400).json({ error: `Cannot assign ${cat.name}. It is currently out of stock.` });
+              if (cat.name.toLowerCase() === 'uniform') {
+                const topLen = parseFloat(uniformDetails?.topLength || 0);
+                const bottomLen = parseFloat(uniformDetails?.bottomLength || 0);
+                if ((cat.topStock || 0) < topLen || (cat.bottomStock || 0) < bottomLen) {
+                  await session.abortTransaction();
+                  session.endSession();
+                  return res.status(400).json({ error: `Cannot assign ${cat.name}. Insufficient uniform stock (Needed Top: ${topLen}m, Bottom: ${bottomLen}m; Available Top: ${cat.topStock || 0}m, Bottom: ${cat.bottomStock || 0}m).` });
+                }
+              } else {
+                if ((cat.currentStock || 0) <= 0) {
+                  await session.abortTransaction();
+                  session.endSession();
+                  return res.status(400).json({ error: `Cannot assign ${cat.name}. It is currently out of stock.` });
+                }
               }
             }
           }
@@ -1373,18 +1610,69 @@ export const updateStudent = async (req, res) => {
             }
           }
 
-          const existingFees = await StudentFee.find({ studentId: id, feeCategoryId: catId }).session(session);
+          const existingFees = await StudentFee.find({
+            studentId: id,
+            feeCategoryId: catId,
+            className: currentClassName,
+            academicYear: currentAcademicYear
+          }).session(session);
 
           if (existingFees.length > 0) {
             const primaryFee = existingFees[0];
+            if (primaryFee.academicYear !== currentAcademicYear || primaryFee.className !== currentClassName) {
+              await session.abortTransaction();
+              session.endSession();
+              return res.status(400).json({ error: 'Fee record violation: Cannot mutate historical fee record.' });
+            }
             // RULE 1: Never overwrite StudentFee when paidAmount > 0
             if ((primaryFee.paidAmount || 0) === 0) {
               if (amount > 0) {
+                // If it is uniform, calculate difference in stock and update it
+                if (cat.name.toLowerCase() === 'uniform') {
+                  const prevTop = primaryFee.uniformDetails?.topLength || 0;
+                  const prevBottom = primaryFee.uniformDetails?.bottomLength || 0;
+                  const newTop = uniformDetailsToSave.topLength;
+                  const newBottom = uniformDetailsToSave.bottomLength;
+
+                  const diffTop = newTop - prevTop;
+                  const diffBottom = newBottom - prevBottom;
+
+                  if (diffTop !== 0 || diffBottom !== 0) {
+                    const updatedCat = await FeeCategory.findOneAndUpdate(
+                      { _id: cat._id, topStock: { $gte: diffTop }, bottomStock: { $gte: diffBottom } },
+                      { $inc: { topStock: -diffTop, bottomStock: -diffBottom } },
+                      { new: true, session }
+                    );
+
+                    if (!updatedCat) {
+                      await session.abortTransaction();
+                      session.endSession();
+                      return res.status(400).json({ error: `Insufficient stock for Uniform. Top needed: ${diffTop}m (Available: ${cat.topStock}m), Bottom needed: ${diffBottom}m (Available: ${cat.bottomStock}m).` });
+                    }
+
+                    await StockHistory.create([{
+                      categoryId: cat._id,
+                      categoryName: cat.name,
+                      previousStock: (updatedCat.topStock + diffTop) + (updatedCat.bottomStock + diffBottom),
+                      updatedStock: updatedCat.topStock + updatedCat.bottomStock,
+                      difference: -(diffTop + diffBottom),
+                      details: `Updated student assignment: top diff: ${diffTop}m, bottom diff: ${diffBottom}m`,
+                      action: 'ASSIGNED',
+                      referenceType: 'Student',
+                      referenceId: id,
+                      updatedBy: req.user?.id
+                    }], { session });
+                  }
+                }
+
                 primaryFee.totalAmount = amount;
                 primaryFee.remainingAmount = amount;
                 primaryFee.className = currentClassName;
                 primaryFee.academicYear = currentAcademicYear;
-                if (uniformDetailsToSave) primaryFee.uniformDetails = uniformDetailsToSave;
+                if (uniformDetailsToSave) {
+                  primaryFee.uniformDetails = uniformDetailsToSave;
+                  primaryFee.isStockDeducted = true;
+                }
                 await primaryFee.save({ session });
               }
             }
@@ -1397,11 +1685,61 @@ export const updateStudent = async (req, res) => {
                 }).session(session);
 
                 if ((dupFee.paidAmount || 0) === 0 && !dupPayment) {
+                  if (dupFee.isStockDeducted && cat.isStockItem) {
+                    // Restore stock for duplicate if it was deducted
+                    if (cat.name.toLowerCase() === 'uniform') {
+                      const topLen = parseFloat(dupFee.uniformDetails?.topLength || 0);
+                      const bottomLen = parseFloat(dupFee.uniformDetails?.bottomLength || 0);
+                      const prevTop = cat.topStock || 0;
+                      const prevBottom = cat.bottomStock || 0;
+                      cat.topStock = prevTop + topLen;
+                      cat.bottomStock = prevBottom + bottomLen;
+                      await cat.save({ session });
+                    } else {
+                      cat.currentStock = (cat.currentStock || 0) + 1;
+                      await cat.save({ session });
+                    }
+                  }
                   await StudentFee.findByIdAndDelete(dupFee._id, { session });
                 }
               }
             }
           } else if (amount > 0) {
+            let isStockDeducted = false;
+            if (cat.name.toLowerCase() === 'uniform') {
+              const newTop = uniformDetailsToSave.topLength;
+              const newBottom = uniformDetailsToSave.bottomLength;
+
+              if (newTop > 0 || newBottom > 0) {
+                const updatedCat = await FeeCategory.findOneAndUpdate(
+                  { _id: cat._id, topStock: { $gte: newTop }, bottomStock: { $gte: newBottom } },
+                  { $inc: { topStock: -newTop, bottomStock: -newBottom } },
+                  { new: true, session }
+                );
+
+                if (!updatedCat) {
+                  await session.abortTransaction();
+                  session.endSession();
+                  return res.status(400).json({ error: `Insufficient stock for Uniform. Top needed: ${newTop}m (Available: ${cat.topStock}m), Bottom needed: ${newBottom}m (Available: ${cat.bottomStock}m).` });
+                }
+
+                await StockHistory.create([{
+                  categoryId: cat._id,
+                  categoryName: cat.name,
+                  previousStock: (updatedCat.topStock + newTop) + (updatedCat.bottomStock + newBottom),
+                  updatedStock: updatedCat.topStock + updatedCat.bottomStock,
+                  difference: -(newTop + newBottom),
+                  details: `New student assignment: top: ${newTop}m, bottom: ${newBottom}m`,
+                  action: 'ASSIGNED',
+                  referenceType: 'Student',
+                  referenceId: id,
+                  updatedBy: req.user?.id
+                }], { session });
+
+                isStockDeducted = true;
+              }
+            }
+
             await StudentFee.create([{
               studentId: id,
               feeCategoryId: catId,
@@ -1410,7 +1748,8 @@ export const updateStudent = async (req, res) => {
               paidAmount: 0,
               className: currentClassName,
               academicYear: currentAcademicYear,
-              uniformDetails: uniformDetailsToSave
+              uniformDetails: uniformDetailsToSave,
+              isStockDeducted: isStockDeducted
             }], { session });
           }
         }
@@ -1461,7 +1800,8 @@ export const updateStudent = async (req, res) => {
             performedById: req.user?.id,
             reason: `Removed from student ${currentStudent?.admissionNumber || id}`,
             referenceType: 'Student',
-            referenceId: currentStudent?._id || id
+            referenceId: currentStudent?._id || id,
+            session
           });
         }
 
@@ -1470,7 +1810,8 @@ export const updateStudent = async (req, res) => {
             performedById: req.user?.id,
             reason: `Assigned to student ${currentStudent?.admissionNumber || id}`,
             referenceType: 'Student',
-            referenceId: currentStudent?._id || id
+            referenceId: currentStudent?._id || id,
+            session
           });
         }
       }
@@ -1501,6 +1842,8 @@ export const updateStudent = async (req, res) => {
       }
 
       const syncSpecialFee = async (feeName, amount) => {
+        if (amount === undefined) return;
+
         const effectiveAmount = normalizeNumber(amount, 0);
         let category = await FeeCategory.findOne({ name: feeName }).session(session);
         if (!category) {
@@ -1515,11 +1858,8 @@ export const updateStudent = async (req, res) => {
         const existingFee = await StudentFee.findOne({
           studentId: id,
           feeCategoryId: category._id,
-          $or: [
-            { className: currentClassName },
-            { className: { $exists: false } },
-            { className: null }
-          ]
+          className: currentClassName,
+          academicYear: currentAcademicYear
         }).session(session);
 
         if (effectiveAmount <= 0) {
@@ -1536,6 +1876,9 @@ export const updateStudent = async (req, res) => {
         }
 
         if (existingFee) {
+          if (existingFee.academicYear !== currentAcademicYear || existingFee.className !== currentClassName) {
+            throw new Error(`Fee record violation: Cannot mutate historical fee record (${existingFee.academicYear}/${existingFee.className}).`);
+          }
           // RULE 1: Do not overwrite if paidAmount > 0
           if ((existingFee.paidAmount || 0) === 0) {
             existingFee.totalAmount = effectiveAmount;
@@ -1722,9 +2065,11 @@ export const promoteStudents = async (req, res) => {
 
     let promotedCount = 0;
     let graduatedCount = 0;
+    const failures = [];
 
-    for (const student of students) {
-      try {
+    await Promise.all(
+      students.map(async (student) => {
+        try {
         const nextClass = normalizedClassMapping[normalizeText(student.currentClass)];
 
         if (nextClass) {
@@ -1738,33 +2083,107 @@ export const promoteStudents = async (req, res) => {
             );
 
             graduatedCount++;
-            continue;
+            return;
           }
 
           const oldClassName = student.currentClass;
           const oldAcademicYear = student.academicYear || fromAcademicYear;
 
           // 1. Tag existing unpaid fees as legacy (belonging to old class/year)
-          await StudentFee.updateMany(
-            { studentId: student._id, remainingAmount: { $gt: 0 } },
-            {
-              $set: {
-                className: oldClassName,
-                academicYear: oldAcademicYear
+          const unpaidFees = await StudentFee.find({
+            studentId: student._id,
+            remainingAmount: { $gt: 0 },
+            $and: [
+              {
+                $or: [
+                  { className: oldClassName },
+                  { className: { $exists: false } },
+                  { className: null },
+                  { className: '' }
+                ]
+              },
+              {
+                $or: [
+                  { academicYear: oldAcademicYear },
+                  { academicYear: { $exists: false } },
+                  { academicYear: null },
+                  { academicYear: '' }
+                ]
+              }
+            ]
+          });
+          for (const fee of unpaidFees) {
+            try {
+              fee.className = oldClassName;
+              fee.academicYear = oldAcademicYear;
+              await fee.save();
+            } catch (feeError) {
+              if (feeError.code === 11000) {
+                const existingFee = await StudentFee.findOne({
+                  studentId: student._id,
+                  feeCategoryId: fee.feeCategoryId,
+                  className: oldClassName
+                });
+                if (existingFee && existingFee._id.toString() !== fee._id.toString()) {
+                  existingFee.totalAmount += fee.totalAmount;
+                  existingFee.paidAmount += fee.paidAmount;
+                  existingFee.remainingAmount += fee.remainingAmount;
+                  await existingFee.save();
+                  await StudentFee.deleteOne({ _id: fee._id });
+                }
+              } else {
+                throw feeError;
               }
             }
-          );
+          }
 
           // 2. Mark fully paid fees with old class info too (for record keeping)
-          await StudentFee.updateMany(
-            { studentId: student._id, remainingAmount: { $eq: 0 }, className: { $exists: false } },
-            {
-              $set: {
-                className: oldClassName,
-                academicYear: oldAcademicYear
+          const paidFees = await StudentFee.find({
+            studentId: student._id,
+            remainingAmount: { $eq: 0 },
+            $and: [
+              {
+                $or: [
+                  { className: oldClassName },
+                  { className: { $exists: false } },
+                  { className: null },
+                  { className: '' }
+                ]
+              },
+              {
+                $or: [
+                  { academicYear: oldAcademicYear },
+                  { academicYear: { $exists: false } },
+                  { academicYear: null },
+                  { academicYear: '' }
+                ]
+              }
+            ]
+          });
+          for (const fee of paidFees) {
+            try {
+              fee.className = oldClassName;
+              fee.academicYear = oldAcademicYear;
+              await fee.save();
+            } catch (feeError) {
+              if (feeError.code === 11000) {
+                const existingFee = await StudentFee.findOne({
+                  studentId: student._id,
+                  feeCategoryId: fee.feeCategoryId,
+                  className: oldClassName
+                });
+                if (existingFee && existingFee._id.toString() !== fee._id.toString()) {
+                  existingFee.totalAmount += fee.totalAmount;
+                  existingFee.paidAmount += fee.paidAmount;
+                  existingFee.remainingAmount += fee.remainingAmount;
+                  await existingFee.save();
+                  await StudentFee.deleteOne({ _id: fee._id });
+                }
+              } else {
+                throw feeError;
               }
             }
-          );
+          }
 
           // 2.5 Preserve old concessions on the source academic year.
           // If any are already fully settled, mark them as completed so they become read-only.
@@ -1791,6 +2210,9 @@ export const promoteStudents = async (req, res) => {
           student.studentStatus = 'Active';
           await student.save();
 
+          // 3.5 Assign default fees of the new class/academic year to student
+          await assignClassDefaultFeesToStudent(student);
+
           // 4. Update previous enrollment record to Promoted
           await StudentEnrollment.updateMany(
             { studentId: student._id, academicYearId: fromYearDoc._id, status: 'Active' },
@@ -1816,8 +2238,14 @@ export const promoteStudents = async (req, res) => {
         }
       } catch (studentError) {
         console.error(`Error promoting student ${student.studentName || 'Unknown'} (${student._id}):`, studentError);
+        failures.push({
+          studentName: student.studentName || 'Unknown',
+          admissionNumber: student.admissionNumber || '',
+          error: studentError.message || 'Unknown error'
+        });
       }
-    }
+    })
+  );
 
     // Mark the source year completed and the destination year active so the dashboard reflects the promotion.
     if (fromYearDocResolved.status !== 'Completed') {
@@ -1837,7 +2265,12 @@ export const promoteStudents = async (req, res) => {
       });
     }
 
-    res.json({ message: `Successfully promoted ${promotedCount} students and graduated ${graduatedCount} students.`, promotedCount, graduatedCount });
+    res.json({
+      message: `Successfully promoted ${promotedCount} students.`,
+      promotedCount,
+      graduatedCount,
+      failures
+    });
 
   } catch (error) {
     console.error('Error promoting students:', error);
