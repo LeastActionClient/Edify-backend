@@ -5,6 +5,8 @@ import path from 'path';
 import fs from 'fs';
 import { logoBase64 } from '../utils/logoBase64.js';
 
+const EFFECTIVE_CONCESSION_STATUSES = new Set(['Active', 'Completed', 'Expired']);
+
 const generateInvoiceNumber = async () => {
   const currentYear = new Date().getFullYear();
   // Find the invoice with the highest number for the current year
@@ -28,6 +30,32 @@ const mmToPt = (value) => value * MM_TO_PT;
 const toNumber = (value) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const applyConcessionSnapshot = (fee, concession) => {
+  const feeDoc = fee || {};
+  const concessionDoc = concession || null;
+
+  if (!concessionDoc) {
+    feeDoc.lessAmount = 0;
+    feeDoc.discountAmount = 0;
+    feeDoc.concessionStatus = 'None';
+    return feeDoc;
+  }
+
+  feeDoc.concessionStatus = concessionDoc.status || 'None';
+
+  if (EFFECTIVE_CONCESSION_STATUSES.has(concessionDoc.status)) {
+    feeDoc.lessAmount = concessionDoc.lessAmount || 0;
+    feeDoc.discountAmount = concessionDoc.lessAmount || 0;
+    feeDoc.remainingAmount = Math.max(0, (feeDoc.totalAmount || 0) - (concessionDoc.lessAmount || 0) - (feeDoc.paidAmount || 0));
+  } else {
+    feeDoc.lessAmount = 0;
+    feeDoc.discountAmount = 0;
+    feeDoc.remainingAmount = Math.max(0, (feeDoc.totalAmount || 0) - (feeDoc.paidAmount || 0));
+  }
+
+  return feeDoc;
 };
 
 const normalizeSpaces = (value) => String(value || '').replace(/\s+/g, ' ').trim();
@@ -210,7 +238,7 @@ const drawReceiptCopy = ({
   const lessWidth = Math.round(innerWidth * 0.11);
   const paidWidth = Math.round(innerWidth * 0.13);
   const balanceWidth = innerWidth - descWidth - totalWidth - lessWidth - paidWidth;
-  const rowHeight = mmToPt(4.2);
+  const rowHeight = mmToPt(4.4);
 
   const student = payment.studentId || payment.student || {};
   const application = payment.applicationId || payment.application || {};
@@ -225,53 +253,63 @@ const drawReceiptCopy = ({
 
   try {
     const imageBuffer = Buffer.from(logoBase64, 'base64');
-    doc.image(imageBuffer, innerX, innerY, {
-      width: mmToPt(12)
+    doc.image(imageBuffer, innerX, innerY + mmToPt(0.1), {
+      width: mmToPt(10)
     });
   } catch (imageError) {
     console.error('Error loading receipt logo', imageError);
   }
 
-  const textX = innerX + mmToPt(14);
-  doc.fillColor('#0F172A').font('Helvetica-Bold').fontSize(9.5)
-    .text('KASTHURI NURSERY AND PRIMARY SCHOOL', textX, innerY, { width: innerWidth - mmToPt(70) });
+  doc.fillColor('#0F172A').font('Helvetica-Bold').fontSize(10.8)
+    .text('KASTHURI NURSERY AND PRIMARY SCHOOL', innerX + mmToPt(12), innerY + mmToPt(0.2), {
+      width: innerWidth - mmToPt(24),
+      align: 'center'
+    });
 
-  doc.fillColor('#475569').font('Helvetica').fontSize(7.2)
-    .text('No.15 & 44 Eda Street, Saidapet, Vellore - 632 012.', textX, innerY + mmToPt(4.8), { width: innerWidth - mmToPt(70) })
-    .text('Phone: 0416-2211877, +91 97919 50179 | Email: Kasthurinurseryschool@gmail.com', textX, innerY + mmToPt(8.2), { width: innerWidth - mmToPt(70) });
+  // doc.fillColor('#475569').font('Helvetica').fontSize(6.6)
+  //   .text('No.15 & 44 Eda Street, Saidapet, Vellore - 632 012.', innerX, innerY + mmToPt(3.9), {
+  //     width: innerWidth,
+  //     align: 'center'
+  //   })
+    // .text('Phone: 0416-2211877, +91 97919 50179 | Email: Kasthurinurseryschool@gmail.com', innerX, innerY + mmToPt(6.7), {
+    //   width: innerWidth,
+    //   align: 'center'
+    // });
 
-  doc.fillColor('#0F172A').font('Helvetica-Bold').fontSize(10.5)
-    .text('FEE RECEIPT', innerX + innerWidth - mmToPt(40), innerY + mmToPt(1), { width: mmToPt(38), align: 'right' });
+  doc.fillColor('#0F172A').font('Helvetica-Bold').fontSize(11.5)
+    .text('FEE RECEIPT', innerX + innerWidth - mmToPt(40), innerY + mmToPt(0.3), { width: mmToPt(38), align: 'right' });
 
-  const headerBottom = innerY + mmToPt(14.5);
+  const headerBottom = innerY + mmToPt(11.8);
   doc.moveTo(innerX, headerBottom).lineTo(innerX + innerWidth, headerBottom).strokeColor('#CBD5E1').stroke();
 
-  const detailTop = headerBottom + mmToPt(1.8);
-  const leftColX = innerX;
-  const rightColX = innerX + innerWidth / 2 + mmToPt(1);
-  const lineGap = mmToPt(4.2);
+  const detailTop = headerBottom + mmToPt(1.0);
+  const detailGap = mmToPt(8);
+  const detailColumnWidth = (innerWidth - detailGap) / 2;
+  const leftColX = innerX + mmToPt(3);
+  const rightColX = innerX + detailColumnWidth + detailGap;
+  const lineGap = mmToPt(4.0);
 
-  doc.fillColor('#0F172A').font('Helvetica').fontSize(8.2);
+  doc.fillColor('#0F172A').font('Helvetica').fontSize(8.8);
   if (payment.paymentType === 'APPLICATION') {
-    doc.text(`Application No: ${application.applicationId || '-'}`, leftColX, detailTop, { width: innerWidth / 2 - mmToPt(2) });
-    doc.text(`Receipt No: ${receiptNumber}`, leftColX, detailTop + lineGap, { width: innerWidth / 2 - mmToPt(2) });
-    doc.text(`Applicant Name: ${application.studentName || '-'}`, leftColX, detailTop + lineGap * 2, { width: innerWidth / 2 - mmToPt(2) });
+    doc.text(`Application No: ${application.applicationId || '-'}`, leftColX, detailTop, { width: detailColumnWidth - mmToPt(4) });
+    doc.text(`Receipt No: ${receiptNumber}`, leftColX, detailTop + lineGap, { width: detailColumnWidth - mmToPt(4) });
+    doc.text(`Applicant Name: ${application.studentName || '-'}`, leftColX, detailTop + lineGap * 2, { width: detailColumnWidth - mmToPt(4) });
 
-    doc.text(`Applying Class: ${application.applyingClass || '-'}`, rightColX, detailTop, { width: innerWidth / 2 - mmToPt(2), align: 'right' });
-    doc.text(`Date: ${receiptDate}`, rightColX, detailTop + lineGap, { width: innerWidth / 2 - mmToPt(2), align: 'right' });
-    doc.text(`Payment Mode: ${payment.paymentMethod || '-'}`, rightColX, detailTop + lineGap * 2, { width: innerWidth / 2 - mmToPt(2), align: 'right' });
+    doc.text(`Applying Class: ${application.applyingClass || '-'}`, rightColX, detailTop, { width: detailColumnWidth - mmToPt(4), align: 'right' });
+    doc.text(`Date: ${receiptDate}`, rightColX, detailTop + lineGap, { width: detailColumnWidth - mmToPt(4), align: 'right' });
+    doc.text(`Payment Mode: ${payment.paymentMethod || '-'}`, rightColX, detailTop + lineGap * 2, { width: detailColumnWidth - mmToPt(4), align: 'right' });
   } else {
-    doc.text(`Admission No: ${student.admissionNumber || '-'}`, leftColX, detailTop, { width: innerWidth / 2 - mmToPt(2) });
-    doc.text(`Receipt No: ${receiptNumber}`, leftColX, detailTop + lineGap, { width: innerWidth / 2 - mmToPt(2) });
-    doc.text(`Student Name: ${student.studentName || '-'}`, leftColX, detailTop + lineGap * 2, { width: innerWidth / 2 - mmToPt(2) });
+    doc.text(`Class & Section: ${student.currentClass || '-'}`, leftColX, detailTop, { width: detailColumnWidth - mmToPt(4) });
+    doc.text(`Receipt No: ${receiptNumber}`, leftColX, detailTop + lineGap, { width: detailColumnWidth - mmToPt(4) });
+    doc.text(`Student Name: ${student.studentName || '-'}`, leftColX, detailTop + lineGap * 2, { width: detailColumnWidth - mmToPt(4) });
 
-    doc.text(`Class & Section: ${student.currentClass || '-'} ${student.section || ''}`, rightColX, detailTop, { width: innerWidth / 2 - mmToPt(2), align: 'right' });
-    doc.text(`Date: ${receiptDate}`, rightColX, detailTop + lineGap, { width: innerWidth / 2 - mmToPt(2), align: 'right' });
-    doc.text(`Payment Mode: ${payment.paymentMethod || '-'}`, rightColX, detailTop + lineGap * 2, { width: innerWidth / 2 - mmToPt(2), align: 'right' });
+    doc.text(` Admission No: ${student.admissionNumber || '-'} ${student.section || ''}`, rightColX, detailTop, { width: detailColumnWidth - mmToPt(4), align: 'right' });
+    doc.text(`Date: ${receiptDate}`, rightColX, detailTop + lineGap, { width: detailColumnWidth - mmToPt(4), align: 'right' });
+    doc.text(`Payment Mode: ${payment.paymentMethod || '-'}`, rightColX, detailTop + lineGap * 2, { width: detailColumnWidth - mmToPt(4), align: 'right' });
   }
 
-  const tableTop = detailTop + lineGap * 3 + mmToPt(1.8);
-  const tableHeaderHeight = mmToPt(4.8);
+  const tableTop = detailTop + lineGap * 3 + mmToPt(1.0);
+  const tableHeaderHeight = mmToPt(4.4);
   const tableWidth = innerWidth;
 
   doc.roundedRect(innerX, tableTop, tableWidth, tableHeaderHeight + groupedRows.length * rowHeight, 1.5)
@@ -282,15 +320,15 @@ const drawReceiptCopy = ({
   doc.rect(innerX, tableTop, tableWidth, tableHeaderHeight)
     .fillAndStroke('#F1F5F9', '#CBD5E1');
 
-  doc.fillColor('#334155').font('Helvetica-Bold').fontSize(7.6);
-  doc.text('Fee Description', innerX + mmToPt(1.2), tableTop + mmToPt(1.2), { width: descWidth - mmToPt(2), ellipsis: true });
-  doc.text('Total', innerX + descWidth, tableTop + mmToPt(1.2), { width: totalWidth, align: 'right' });
+  doc.fillColor('#334155').font('Helvetica-Bold').fontSize(8.2);
+  doc.text('Fee Description', innerX + mmToPt(1.2), tableTop + mmToPt(1.0), { width: descWidth - mmToPt(2), ellipsis: true });
+  doc.text('Total', innerX + descWidth, tableTop + mmToPt(1.0), { width: totalWidth, align: 'right' });
   doc.text('Less', innerX + descWidth + totalWidth, tableTop + mmToPt(1.2), { width: lessWidth, align: 'right' });
-  doc.text('Paid', innerX + descWidth + totalWidth + lessWidth, tableTop + mmToPt(1.2), { width: paidWidth, align: 'right' });
-  doc.text('Balance', innerX + descWidth + totalWidth + lessWidth + paidWidth, tableTop + mmToPt(1.2), { width: balanceWidth - mmToPt(1), align: 'right' });
+  doc.text('Paid', innerX + descWidth + totalWidth + lessWidth, tableTop + mmToPt(1.0), { width: paidWidth, align: 'right' });
+  doc.text('Balance', innerX + descWidth + totalWidth + lessWidth + paidWidth, tableTop + mmToPt(1.0), { width: balanceWidth - mmToPt(1), align: 'right' });
 
   let rowTop = tableTop + tableHeaderHeight;
-  doc.fillColor('#0F172A').font('Helvetica').fontSize(7.7);
+  doc.fillColor('#0F172A').font('Helvetica').fontSize(8.4);
 
   if (groupedRows.length === 0) {
     doc.text('No fee details available.', innerX, rowTop + mmToPt(1.5), {
@@ -301,47 +339,74 @@ const drawReceiptCopy = ({
     groupedRows.forEach((row, index) => {
       const rowY = rowTop + index * rowHeight;
       doc.moveTo(innerX, rowY).lineTo(innerX + tableWidth, rowY).strokeColor('#E2E8F0').stroke();
-      doc.text(row.displayName, innerX + mmToPt(1.2), rowY + mmToPt(0.8), { width: descWidth - mmToPt(2), ellipsis: true });
-      doc.text(formatReceiptCurrency(row.totalAmount), innerX + descWidth, rowY + mmToPt(0.8), { width: totalWidth - mmToPt(1), align: 'right' });
-      doc.text(formatReceiptCurrency(row.discountAmount), innerX + descWidth + totalWidth, rowY + mmToPt(0.8), { width: lessWidth - mmToPt(1), align: 'right' });
-      doc.text(formatReceiptCurrency(row.paidAmount), innerX + descWidth + totalWidth + lessWidth, rowY + mmToPt(0.8), { width: paidWidth - mmToPt(1), align: 'right' });
-      doc.text(formatReceiptCurrency(row.balanceAmount), innerX + descWidth + totalWidth + lessWidth + paidWidth, rowY + mmToPt(0.8), { width: balanceWidth - mmToPt(1), align: 'right' });
+      doc.text(row.displayName, innerX + mmToPt(1.2), rowY + mmToPt(0.7), { width: descWidth - mmToPt(2), ellipsis: true });
+      doc.text(formatReceiptCurrency(row.totalAmount), innerX + descWidth, rowY + mmToPt(0.7), { width: totalWidth - mmToPt(1), align: 'right' });
+      doc.text(formatReceiptCurrency(row.discountAmount), innerX + descWidth + totalWidth, rowY + mmToPt(0.7), { width: lessWidth - mmToPt(1), align: 'right' });
+      doc.text(formatReceiptCurrency(row.paidAmount), innerX + descWidth + totalWidth + lessWidth, rowY + mmToPt(0.7), { width: paidWidth - mmToPt(1), align: 'right' });
+      doc.text(formatReceiptCurrency(row.balanceAmount), innerX + descWidth + totalWidth + lessWidth + paidWidth, rowY + mmToPt(0.7), { width: balanceWidth - mmToPt(1), align: 'right' });
     });
   }
 
   const tableBottom = rowTop + groupedRows.length * rowHeight;
   doc.moveTo(innerX, tableBottom).lineTo(innerX + tableWidth, tableBottom).strokeColor('#E2E8F0').stroke();
 
-  const summaryTop = tableBottom + mmToPt(1.8);
+  const summaryTop = tableBottom + mmToPt(1.0);
   const summaryWidth = mmToPt(70);
   const summaryX = innerX + innerWidth - summaryWidth;
-
-  const netPayable = totals.totalAmount - totals.discountAmount;
 
   doc.roundedRect(summaryX, summaryTop, summaryWidth, mmToPt(21), 1.2)
     .lineWidth(0.4)
     .strokeColor('#CBD5E1')
     .stroke();
 
-  doc.fillColor('#334155').font('Helvetica-Bold').fontSize(7.8)
-    .text('Grand Total', summaryX + mmToPt(1), summaryTop + mmToPt(0.8), { width: summaryWidth - mmToPt(2) });
+  doc.fillColor('#334155').font('Helvetica-Bold').fontSize(8.6)
+    .text('Grand Total', summaryX + mmToPt(1), summaryTop + mmToPt(0.6), { width: summaryWidth - mmToPt(2) });
 
-  doc.fillColor('#0F172A').font('Helvetica').fontSize(7.6);
-  const summaryLineY = summaryTop + mmToPt(4.5);
-  const summaryRowGap = mmToPt(3.2);
-  doc.text('Original Fee', summaryX + mmToPt(1), summaryLineY, { width: summaryWidth - mmToPt(16) });
-  doc.text(formatReceiptCurrency(totals.totalAmount), summaryX + mmToPt(16), summaryLineY, { width: summaryWidth - mmToPt(17), align: 'right' });
-  doc.text('Total Less Amount', summaryX + mmToPt(1), summaryLineY + summaryRowGap, { width: summaryWidth - mmToPt(16) });
-  doc.text(formatReceiptCurrency(totals.discountAmount), summaryX + mmToPt(16), summaryLineY + summaryRowGap, { width: summaryWidth - mmToPt(17), align: 'right' });
-  doc.text('Net Payable', summaryX + mmToPt(1), summaryLineY + summaryRowGap * 2, { width: summaryWidth - mmToPt(16) });
-  doc.text(formatReceiptCurrency(netPayable), summaryX + mmToPt(16), summaryLineY + summaryRowGap * 2, { width: summaryWidth - mmToPt(17), align: 'right' });
-  doc.text('Paid This Invoice', summaryX + mmToPt(1), summaryLineY + summaryRowGap * 3, { width: summaryWidth - mmToPt(16) });
-  doc.text(formatReceiptCurrency(totals.paidAmount), summaryX + mmToPt(16), summaryLineY + summaryRowGap * 3, { width: summaryWidth - mmToPt(17), align: 'right' });
+  doc.fillColor('#0F172A').font('Helvetica').fontSize(8.6);
+  const summaryLineY = summaryTop + mmToPt(4.0);
+  doc.text('Total Amount', summaryX + mmToPt(1), summaryLineY, { width: summaryWidth - mmToPt(16) });
   doc.font('Helvetica-Bold');
-  doc.text('Balance Pending', summaryX + mmToPt(1), summaryLineY + summaryRowGap * 4, { width: summaryWidth - mmToPt(16) });
-  doc.text(formatReceiptCurrency(totals.balanceAmount), summaryX + mmToPt(16), summaryLineY + summaryRowGap * 4, { width: summaryWidth - mmToPt(17), align: 'right' });
+  doc.text(formatReceiptCurrency(totals.totalAmount), summaryX + mmToPt(16), summaryLineY, { width: summaryWidth - mmToPt(17), align: 'right' });
 
   doc.restore();
+};
+
+const drawReceiptSheet = ({
+  doc,
+  payment,
+  invoice,
+  groupedRows,
+  totals
+}) => {
+  const pageMargin = mmToPt(3);
+  const sheetPadding = mmToPt(3);
+  const columnGap = mmToPt(2.5);
+  const rowGap = mmToPt(2.5);
+  const contentX = pageMargin + sheetPadding;
+  const contentY = pageMargin + sheetPadding;
+  const contentWidth = doc.page.width - pageMargin * 2 - sheetPadding * 2;
+  const contentHeight = doc.page.height - pageMargin * 2 - sheetPadding * 2;
+  const cellWidth = (contentWidth - columnGap) / 2;
+  const cellHeight = (contentHeight - rowGap) / 2;
+
+  for (let index = 0; index < 4; index += 1) {
+    const col = index % 2;
+    const row = Math.floor(index / 2);
+    const cellX = contentX + col * (cellWidth + columnGap);
+    const cellY = contentY + row * (cellHeight + rowGap);
+
+    drawReceiptCopy({
+      doc,
+      payment,
+      invoice,
+      groupedRows,
+      totals,
+      x: cellX,
+      y: cellY,
+      width: cellWidth,
+      height: cellHeight
+    });
+  }
 };
 
 const getInvoicePaymentData = async (id) => {
@@ -389,8 +454,8 @@ const getInvoicePaymentData = async (id) => {
   // Load and apply concessions dynamically to match discountAmount in PDF / invoice details
   const studentIdForConcessions = payment.studentId?._id || payment.studentId;
   const concessions = studentIdForConcessions 
-    ? await StudentFeeConcession.find({ studentId: studentIdForConcessions, status: { $in: ['Active', 'Inactive'] } })
-      .select('studentFeeId lessAmount status')
+    ? await StudentFeeConcession.find({ studentId: studentIdForConcessions, status: { $in: ['Active', 'Inactive', 'Completed', 'Expired'] } })
+      .select('studentFeeId lessAmount status academicYear academicYearId')
       .lean()
     : [];
   const concessionMap = new Map(concessions.map(c => [c.studentFeeId.toString(), c]));
@@ -400,43 +465,15 @@ const getInvoicePaymentData = async (id) => {
     if (payment.studentFee.feeCategoryId) {
       payment.studentFee.feeCategory = payment.studentFee.feeCategoryId;
     }
-    const concession = concessionMap.get(payment.studentFee._id.toString());
-    if (concession) {
-      payment.studentFee.lessAmount = concession.lessAmount;
-      payment.studentFee.discountAmount = concession.lessAmount;
-      payment.studentFee.concessionStatus = concession.status;
-      if (concession.status === 'Active') {
-        payment.studentFee.remainingAmount = Math.max(0, payment.studentFee.totalAmount - concession.lessAmount - (payment.studentFee.paidAmount || 0));
-      } else {
-        payment.studentFee.remainingAmount = Math.max(0, payment.studentFee.totalAmount - (payment.studentFee.paidAmount || 0));
-      }
-    } else {
-      payment.studentFee.lessAmount = 0;
-      payment.studentFee.discountAmount = 0;
-      payment.studentFee.concessionStatus = 'None';
-    }
+    applyConcessionSnapshot(payment.studentFee, concessionMap.get(payment.studentFee._id.toString()));
   }
 
   if (payment.feeAllocations && payment.feeAllocations.length > 0) {
     payment.feeAllocations.forEach(alloc => {
       if (alloc.studentFeeId) {
         const concession = concessionMap.get(alloc.studentFeeId._id.toString());
-        if (concession) {
-          alloc.studentFeeId.lessAmount = concession.lessAmount;
-          alloc.studentFeeId.discountAmount = concession.lessAmount;
-          alloc.discountAmount = concession.lessAmount;
-          alloc.studentFeeId.concessionStatus = concession.status;
-          if (concession.status === 'Active') {
-            alloc.studentFeeId.remainingAmount = Math.max(0, alloc.studentFeeId.totalAmount - concession.lessAmount - (alloc.studentFeeId.paidAmount || 0));
-          } else {
-            alloc.studentFeeId.remainingAmount = Math.max(0, alloc.studentFeeId.totalAmount - (alloc.studentFeeId.paidAmount || 0));
-          }
-        } else {
-          alloc.studentFeeId.lessAmount = 0;
-          alloc.studentFeeId.discountAmount = 0;
-          alloc.discountAmount = 0;
-          alloc.studentFeeId.concessionStatus = 'None';
-        }
+        applyConcessionSnapshot(alloc.studentFeeId, concession);
+        alloc.discountAmount = alloc.studentFeeId.discountAmount || 0;
       }
     });
   }
@@ -539,7 +576,7 @@ export const createPayment = async (req, res) => {
     // Load active/inactive concessions for these fees
     const concessions = await StudentFeeConcession.find({
       studentFeeId: { $in: resolvedFeeIds },
-      status: { $in: ['Active', 'Inactive'] }
+      status: { $in: ['Active', 'Inactive', 'Completed', 'Expired'] }
     }).session(session).lean();
 
     const concessionMap = new Map(concessions.map(c => [c.studentFeeId.toString(), c]));
@@ -547,13 +584,16 @@ export const createPayment = async (req, res) => {
     // Adjust the remaining amounts in memory for total validation and allocation
     unpaidFees.forEach(fee => {
       const concession = concessionMap.get(fee._id.toString());
-      if (concession && concession.status === 'Active') {
+      fee.originalRemainingAmount = fee.remainingAmount;
+      if (concession) {
         fee.lessAmount = concession.lessAmount;
-        fee.originalRemainingAmount = fee.remainingAmount;
-        fee.remainingAmount = Math.max(0, fee.totalAmount - concession.lessAmount - fee.paidAmount);
+        if (EFFECTIVE_CONCESSION_STATUSES.has(concession.status)) {
+          fee.remainingAmount = Math.max(0, fee.totalAmount - concession.lessAmount - fee.paidAmount);
+        } else {
+          fee.remainingAmount = Math.max(0, fee.totalAmount - fee.paidAmount);
+        }
       } else {
         fee.lessAmount = 0;
-        fee.originalRemainingAmount = fee.remainingAmount;
         fee.remainingAmount = Math.max(0, fee.totalAmount - fee.paidAmount);
       }
     });
@@ -637,6 +677,12 @@ export const createPayment = async (req, res) => {
         paidAmount: newPaidAmount,
         remainingAmount: newRemainingAmount
       }, { session });
+
+      const relatedConcession = await StudentFeeConcession.findOne({ studentFeeId: fee._id }).session(session);
+      if (relatedConcession && relatedConcession.status === 'Active' && newRemainingAmount <= 0) {
+        relatedConcession.status = 'Completed';
+        await relatedConcession.save({ session });
+      }
 
       if (feeStatus === 'PAID') {
         const category = await FeeCategory.findById(fee.feeCategoryId).session(session);
@@ -777,9 +823,9 @@ export const getPaymentHistory = async (req, res) => {
         .lean(),
       StudentFeeConcession.find({
         studentId: { $in: studentIds },
-        status: { $in: ['Active', 'Inactive'] }
+        status: { $in: ['Active', 'Inactive', 'Completed', 'Expired'] }
       })
-        .select('studentFeeId lessAmount status')
+        .select('studentFeeId lessAmount status academicYear academicYearId')
         .lean()
     ]);
     const invoiceMap = {};
@@ -803,42 +849,14 @@ export const getPaymentHistory = async (req, res) => {
         if (pObj.studentFee.feeCategoryId) {
           pObj.studentFee.feeCategory = pObj.studentFee.feeCategoryId;
         }
-        const concession = concessionMap.get(pObj.studentFee._id.toString());
-        if (concession) {
-          pObj.studentFee.lessAmount = concession.lessAmount;
-          pObj.studentFee.discountAmount = concession.lessAmount;
-          pObj.studentFee.concessionStatus = concession.status;
-          if (concession.status === 'Active') {
-            pObj.studentFee.remainingAmount = Math.max(0, pObj.studentFee.totalAmount - concession.lessAmount - (pObj.studentFee.paidAmount || 0));
-          } else {
-            pObj.studentFee.remainingAmount = Math.max(0, pObj.studentFee.totalAmount - (pObj.studentFee.paidAmount || 0));
-          }
-        } else {
-          pObj.studentFee.lessAmount = 0;
-          pObj.studentFee.discountAmount = 0;
-          pObj.studentFee.concessionStatus = 'None';
-        }
+        applyConcessionSnapshot(pObj.studentFee, concessionMap.get(pObj.studentFee._id.toString()));
       }
       if (pObj.feeAllocations && pObj.feeAllocations.length > 0) {
         pObj.feeAllocations.forEach(alloc => {
           if (alloc.studentFeeId) {
             const concession = concessionMap.get(alloc.studentFeeId._id.toString());
-            if (concession) {
-              alloc.studentFeeId.lessAmount = concession.lessAmount;
-              alloc.studentFeeId.discountAmount = concession.lessAmount;
-              alloc.discountAmount = concession.lessAmount;
-              alloc.studentFeeId.concessionStatus = concession.status;
-              if (concession.status === 'Active') {
-                alloc.studentFeeId.remainingAmount = Math.max(0, alloc.studentFeeId.totalAmount - concession.lessAmount - (alloc.studentFeeId.paidAmount || 0));
-              } else {
-                alloc.studentFeeId.remainingAmount = Math.max(0, alloc.studentFeeId.totalAmount - (alloc.studentFeeId.paidAmount || 0));
-              }
-            } else {
-              alloc.studentFeeId.lessAmount = 0;
-              alloc.studentFeeId.discountAmount = 0;
-              alloc.discountAmount = 0;
-              alloc.studentFeeId.concessionStatus = 'None';
-            }
+            applyConcessionSnapshot(alloc.studentFeeId, concession);
+            alloc.discountAmount = alloc.studentFeeId.discountAmount || 0;
           }
         });
       }
@@ -881,22 +899,12 @@ export const generateInvoicePDF = async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename=invoice_${invoice.invoiceNumber}.pdf`);
 
     doc.pipe(res);
-    const pageMargin = mmToPt(5);
-    const copyHeight = mmToPt(95);
-    const copyWidth = doc.page.width - pageMargin * 2;
-    const logoPath = path.resolve(process.cwd(), '../Kasthuri-Billing-FE/public/logo.svg');
-
-    drawReceiptCopy({
+    drawReceiptSheet({
       doc,
       payment,
       invoice,
       groupedRows,
-      totals: receiptTotals,
-      x: pageMargin,
-      y: pageMargin,
-      width: copyWidth,
-      height: copyHeight,
-      logoPath
+      totals: receiptTotals
     });
 
     if (payment.feeAllocations && payment.feeAllocations.length > 0) {

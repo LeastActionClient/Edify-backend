@@ -122,9 +122,21 @@ export const getStudents = async (req, res) => {
         .lean()
     ]);
 
+    const enrollments = await StudentEnrollment.find({ studentId: { $in: studentIds } })
+      .select('studentId academicYearId academicYear classId className sectionId sectionName status joinedDate promotedDate createdAt updatedAt')
+      .sort({ joinedDate: 1, createdAt: 1 })
+      .lean();
+
     const concessionMap = new Map();
     concessions.forEach(c => {
       concessionMap.set(c.studentFeeId.toString(), c);
+    });
+
+    const enrollmentMap = new Map();
+    enrollments.forEach(enrollment => {
+      const sid = enrollment.studentId.toString();
+      if (!enrollmentMap.has(sid)) enrollmentMap.set(sid, []);
+      enrollmentMap.get(sid).push(enrollment);
     });
 
     const feeMap = {};
@@ -152,6 +164,10 @@ export const getStudents = async (req, res) => {
 
     const result = students.map(s => {
       const allFees = feeMap[s._id.toString()] || [];
+      const studentEnrollments = enrollmentMap.get(s._id.toString()) || [];
+      const activeEnrollment = studentEnrollments.find(enrollment => enrollment.status === 'Active')
+        || studentEnrollments[studentEnrollments.length - 1]
+        || null;
       const currentClassFees = allFees.filter(f =>
         f.className === s.currentClass || (!f.className && !f.academicYear)
       );
@@ -163,7 +179,17 @@ export const getStudents = async (req, res) => {
         ...s,
         studentFees: allFees,
         currentClassFees,
-        previousClassFees
+        previousClassFees,
+        currentEnrollment: activeEnrollment ? {
+          academicYearId: activeEnrollment.academicYearId,
+          academicYear: activeEnrollment.academicYear,
+          className: activeEnrollment.className,
+          sectionName: activeEnrollment.sectionName,
+          status: activeEnrollment.status,
+          joinedDate: activeEnrollment.joinedDate,
+          promotedDate: activeEnrollment.promotedDate,
+          createdAt: activeEnrollment.createdAt
+        } : null
       };
     });
 
@@ -208,6 +234,11 @@ export const getStudentById = async (req, res) => {
         .populate('activityId', 'name amount description status')
         .lean()
     ]);
+
+    const enrollments = await StudentEnrollment.find({ studentId: id })
+      .select('studentId academicYearId academicYear classId className sectionId sectionName status joinedDate promotedDate createdAt updatedAt')
+      .sort({ joinedDate: 1, createdAt: 1 })
+      .lean();
 
     const classDocCache = new Map();
     const sectionDocCache = new Map();
@@ -290,6 +321,10 @@ export const getStudentById = async (req, res) => {
       return fObj;
     });
 
+    const activeEnrollment = enrollments.find(enrollment => enrollment.status === 'Active')
+      || enrollments[enrollments.length - 1]
+      || null;
+
     const currentClassFees = studentFees.filter(f =>
       f.className === student.currentClass || (!f.className && !f.academicYear)
     );
@@ -297,7 +332,25 @@ export const getStudentById = async (req, res) => {
       f.className && f.className !== student.currentClass
     );
 
-    res.json({ ...student, studentFees, currentClassFees, previousClassFees, payments, includedCharges, activities });
+    res.json({
+      ...student,
+      studentFees,
+      currentClassFees,
+      previousClassFees,
+      currentEnrollment: activeEnrollment ? {
+        academicYearId: activeEnrollment.academicYearId,
+        academicYear: activeEnrollment.academicYear,
+        className: activeEnrollment.className,
+        sectionName: activeEnrollment.sectionName,
+        status: activeEnrollment.status,
+        joinedDate: activeEnrollment.joinedDate,
+        promotedDate: activeEnrollment.promotedDate,
+        createdAt: activeEnrollment.createdAt
+      } : null,
+      payments,
+      includedCharges,
+      activities
+    });
   } catch (error) {
     res.status(500).json({ error: 'Error fetching student details' });
   }
@@ -400,7 +453,8 @@ const validateStudentInput = (data) => {
     motherOccupation,
     caste,
     emisNo,
-    emisNumber
+    emisNumber,
+    pincode
   } = data;
 
   // Father Name Validation (Optional)
@@ -501,6 +555,12 @@ const validateStudentInput = (data) => {
     return 'EMIS No must be exactly 10 digits.';
   }
 
+  // Pincode validation (Optional, but must be exactly 6 digits if provided)
+  const pin = (pincode || '').trim();
+  if (pin && !/^\d{6}$/.test(pin)) {
+    return 'Pincode must be exactly 6 digits.';
+  }
+
   return null;
 };
 
@@ -565,7 +625,8 @@ export const addStudentManually = async (req, res) => {
     whatsappNumber,
     caste,
     emisNo,
-    emisNumber
+    emisNumber,
+    pincode
   });
   if (valError) {
     res.status(400).json({ error: valError });
@@ -900,6 +961,7 @@ export const bulkImportStudents = async (req, res) => {
       const emisNoVal = String(row['emis no'] || row['emis number'] || row['emis'] || '').trim();
       const guardianNameVal = String(row['guardian name'] || row['guardian'] || '').trim();
       const whatsappNumberVal = String(row['whatsapp number'] || row['whatsapp no'] || '').trim();
+      const pincodeVal = String(row['pincode'] || row['pin code'] || row['pin'] || row['postal code'] || '').trim();
 
       const rowValError = validateStudentInput({
         fatherName: String(row['father name'] || ''),
@@ -913,7 +975,8 @@ export const bulkImportStudents = async (req, res) => {
         whatsappNumber: whatsappNumberVal,
         caste: casteVal,
         emisNo: emisNoVal,
-        emisNumber: emisNoVal
+        emisNumber: emisNoVal,
+        pincode: pincodeVal
       });
       
       if (rowValError) {
@@ -945,12 +1008,11 @@ export const bulkImportStudents = async (req, res) => {
           guardianName: guardianNameVal,
           city: String(row['city'] || ''),
           state: String(row['state'] || ''),
-          pincode: String(row['pincode'] || row['pin code'] || row['pin'] || row['postal code'] || ''),
+          pincode: pincodeVal,
           dateOfBirth: parseExcelDate(row['date of birth'] || row['dob']),
           whatsappNumber: whatsappNumberVal,
           emisNumber: emisNoVal,
           emisNo: emisNoVal,
-          email: String(row['email'] || ''),
           rollNumber: String(row['roll number'] || ''),
           admissionDate: parseExcelDate(row['admission date'] || row['date of admission']),
           studentStatus: String(row['student status'] || row['status'] || 'Active'),
@@ -1175,7 +1237,6 @@ export const updateStudent = async (req, res) => {
       community,
       caste,
       nationality,
-      email,
       rollNumber,
       admissionDate,
       academicYear,
@@ -1236,7 +1297,8 @@ export const updateStudent = async (req, res) => {
       whatsappNumber,
       caste,
       emisNo,
-      emisNumber
+      emisNumber,
+      pincode
     });
     if (valError) {
       return res.status(400).json({ error: valError });
@@ -1713,7 +1775,6 @@ export const updateStudent = async (req, res) => {
         community,
         caste: (caste !== undefined ? caste.trim() : currentStudent.caste) || '',
         nationality,
-        email,
         rollNumber,
         academicYear: currentAcademicYear,
         studentStatus,
@@ -1770,56 +1831,91 @@ export const updateStudent = async (req, res) => {
 
 export const promoteStudents = async (req, res) => {
   try {
-    const { fromAcademicYear, toAcademicYear, classMapping } = req.body;
+    const { fromAcademicYear, toAcademicYear, fromAcademicYearId, toAcademicYearId, classMapping } = req.body;
 
-    if (!fromAcademicYear || !toAcademicYear || !classMapping) {
+    if ((!fromAcademicYear && !fromAcademicYearId) || (!toAcademicYear && !toAcademicYearId) || !classMapping) {
       return res.status(400).json({ error: 'fromAcademicYear, toAcademicYear, and classMapping are required.' });
     }
 
-    const fromYearHyphen = String(fromAcademicYear).replace(/[\u2013]/g, '-');
-    const fromYearEnDash = String(fromAcademicYear).replace(/-/g, '–');
-    const fromYearDoc = await AcademicYear.findOne({
-      year: { $in: [fromAcademicYear, fromYearHyphen, fromYearEnDash] }
-    });
+    const fromYearVariants = [
+      fromAcademicYear,
+      String(fromAcademicYear || '').replace(/[\u2013]/g, '-'),
+      String(fromAcademicYear || '').replace(/-/g, '–')
+    ].filter(Boolean);
+    const toYearVariants = [
+      toAcademicYear,
+      String(toAcademicYear || '').replace(/[\u2013]/g, '-'),
+      String(toAcademicYear || '').replace(/-/g, '–')
+    ].filter(Boolean);
+
+    const fromYearDoc = fromAcademicYearId
+      ? await AcademicYear.findById(fromAcademicYearId)
+      : await AcademicYear.findOne({
+          year: { $in: fromYearVariants }
+        });
     if (!fromYearDoc) {
-      return res.status(400).json({ error: `Please create Academic Year ${fromAcademicYear} before promoting students.` });
+      return res.status(400).json({ error: `Please create Academic Year ${fromAcademicYear || 'selected source year'} before promoting students.` });
     }
 
-    const toYearHyphen = String(toAcademicYear).replace(/[\u2013]/g, '-');
-    const toYearEnDash = String(toAcademicYear).replace(/-/g, '–');
-    const toYearDoc = await AcademicYear.findOne({
-      year: { $in: [toAcademicYear, toYearHyphen, toYearEnDash] }
-    });
+    const toYearDoc = toAcademicYearId
+      ? await AcademicYear.findById(toAcademicYearId)
+      : await AcademicYear.findOne({
+          year: { $in: toYearVariants }
+        });
     if (!toYearDoc) {
-      return res.status(400).json({ error: `Please create Academic Year ${toAcademicYear} before promoting students.` });
+      return res.status(400).json({ error: `Please create Academic Year ${toAcademicYear || 'selected destination year'} before promoting students.` });
     }
 
-    const students = await Student.find({
-      $or: [
-        { academicYear: fromAcademicYear },
-        { academicYear: fromYearHyphen },
-        { academicYear: fromYearEnDash },
-        { academicYear: { $exists: false } },
-        { academicYear: null },
-        { academicYear: '' }
-      ],
-      $and: [
-        {
+    const normalizeText = (value) => `${value ?? ''}`.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+    const normalizedClassMapping = Object.fromEntries(
+      Object.entries(classMapping).map(([key, value]) => [normalizeText(key), value])
+    );
+
+    const sourceEnrollmentStudentIds = await StudentEnrollment.distinct('studentId', {
+      academicYearId: fromYearDoc._id,
+      status: 'Active'
+    });
+
+    const students = sourceEnrollmentStudentIds.length > 0
+      ? await Student.find({
+          _id: { $in: sourceEnrollmentStudentIds },
           $or: [
             { studentStatus: 'Active' },
             { studentStatus: { $exists: false } },
-            { studentStatus: null }
+            { studentStatus: null },
+            { studentStatus: '' }
           ]
-        }
-      ]
-    });
+        })
+      : await Student.find({
+          $and: [
+            {
+              $or: [
+                { academicYear: { $in: fromYearVariants } },
+                { academicYear: { $exists: false } },
+                { academicYear: null },
+                { academicYear: '' }
+              ]
+            },
+            {
+              $or: [
+                { studentStatus: 'Active' },
+                { studentStatus: { $exists: false } },
+                { studentStatus: null },
+                { studentStatus: '' }
+              ]
+            }
+          ]
+        });
+
+    const fromYearDocResolved = fromYearDoc;
+    const toYearDocResolved = toYearDoc;
 
     let promotedCount = 0;
     let graduatedCount = 0;
 
     for (const student of students) {
       try {
-        const nextClass = classMapping[student.currentClass];
+        const nextClass = normalizedClassMapping[normalizeText(student.currentClass)];
 
         if (nextClass) {
           if (nextClass === 'Graduated') {
@@ -1827,7 +1923,7 @@ export const promoteStudents = async (req, res) => {
             await student.save();
 
             await StudentEnrollment.updateMany(
-              { studentId: student._id, academicYear: { $in: [fromAcademicYear, fromYearHyphen, fromYearEnDash] }, status: 'Active' },
+              { studentId: student._id, academicYearId: fromYearDoc._id, status: 'Active' },
               { $set: { status: 'Graduated', promotedDate: new Date() } }
             );
 
@@ -1892,14 +1988,34 @@ export const promoteStudents = async (req, res) => {
             }
           }
 
+          // 2.5 Preserve old concessions on the source academic year.
+          // If any are already fully settled, mark them as completed so they become read-only.
+          const activeConcessions = await StudentFeeConcession.find({
+            studentId: student._id,
+            status: 'Active'
+          })
+            .select('_id studentFeeId')
+            .lean();
+
+          for (const concession of activeConcessions) {
+            const concessionFee = await StudentFee.findById(concession.studentFeeId).select('remainingAmount').lean();
+            if (concessionFee && (concessionFee.remainingAmount || 0) <= 0) {
+              await StudentFeeConcession.updateOne(
+                { _id: concession._id },
+                { $set: { status: 'Completed', updatedBy: req.user?.id || null } }
+              );
+            }
+          }
+
           // 3. Update student to new class
           student.currentClass = nextClass;
           student.academicYear = toYearDoc.year; // Use the exact year name stored in DB (e.g. en-dash version)
+          student.studentStatus = 'Active';
           await student.save();
 
           // 4. Update previous enrollment record to Promoted
           await StudentEnrollment.updateMany(
-            { studentId: student._id, academicYear: { $in: [fromAcademicYear, fromYearHyphen, fromYearEnDash] }, status: 'Active' },
+            { studentId: student._id, academicYearId: fromYearDoc._id, status: 'Active' },
             { $set: { status: 'Promoted', promotedDate: new Date() } }
           );
 
@@ -1923,6 +2039,16 @@ export const promoteStudents = async (req, res) => {
       } catch (studentError) {
         console.error(`Error promoting student ${student.studentName || 'Unknown'} (${student._id}):`, studentError);
       }
+    }
+
+    // Mark the source year completed and the destination year active so the dashboard reflects the promotion.
+    if (fromYearDocResolved.status !== 'Completed') {
+      fromYearDocResolved.status = 'Completed';
+      await fromYearDocResolved.save();
+    }
+    if (toYearDocResolved.status !== 'Active') {
+      toYearDocResolved.status = 'Active';
+      await toYearDocResolved.save();
     }
 
     if (req.user) {
@@ -1950,4 +2076,3 @@ export const getNextAdmissionNumber = async (req, res) => {
     res.status(500).json({ error: 'Failed to get next admission number' });
   }
 };
-

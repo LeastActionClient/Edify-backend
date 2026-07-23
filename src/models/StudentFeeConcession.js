@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 const studentFeeConcessionSchema = new mongoose.Schema({
   studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
   studentFeeId: { type: mongoose.Schema.Types.ObjectId, ref: 'StudentFee', required: true },
+  academicYearId: { type: mongoose.Schema.Types.ObjectId, ref: 'AcademicYear' },
   academicYear: { type: String, required: true },
   className: { type: String, required: true },
   section: { type: String },
@@ -19,6 +20,7 @@ const studentFeeConcessionSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // Index for performance and fast lookups
+studentFeeConcessionSchema.index({ academicYearId: 1, studentId: 1, feeCategoryId: 1, status: 1 });
 studentFeeConcessionSchema.index({ studentId: 1, feeCategoryId: 1, status: 1 });
 studentFeeConcessionSchema.index({ studentFeeId: 1, status: 1 });
 studentFeeConcessionSchema.index({ academicYear: 1, className: 1, section: 1 });

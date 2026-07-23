@@ -1,4 +1,42 @@
-import { Student, StudentFee, FeeCategory, StudentFeeConcession, ActivityLog, User, Class, Section } from '../models/index.js';
+import { Student, StudentFee, FeeCategory, StudentFeeConcession, ActivityLog, User, Class, Section, AcademicYear, StudentEnrollment } from '../models/index.js';
+
+const EFFECTIVE_CONCESSION_STATUSES = new Set(['Active', 'Completed', 'Expired']);
+const DISPLAY_CONCESSION_STATUSES = new Set(['Active', 'Inactive', 'Completed', 'Expired', 'Cancelled']);
+
+const getConcessionNetPayable = (originalAmount, lessAmount, status) => {
+  const original = Number(originalAmount) || 0;
+  const discount = Number(lessAmount) || 0;
+
+  if (!EFFECTIVE_CONCESSION_STATUSES.has(status)) {
+    return original;
+  }
+
+  return Math.max(0, original - discount);
+};
+
+const resolveAcademicYearContext = async ({ academicYear, student, studentFee }) => {
+  const enrollment = await StudentEnrollment.findOne({ studentId: student._id, status: 'Active' })
+    .select('academicYearId academicYear')
+    .sort({ joinedDate: -1, createdAt: -1 })
+    .lean();
+
+  const resolvedAcademicYear = academicYear || enrollment?.academicYear || studentFee?.academicYear || student.academicYear || '';
+  const yearVariants = resolvedAcademicYear
+    ? [
+        resolvedAcademicYear,
+        String(resolvedAcademicYear).replace(/-/g, '–'),
+        String(resolvedAcademicYear).replace(/[\u2013]/g, '-')
+      ].filter(Boolean)
+    : [];
+  const resolvedAcademicYearDoc = yearVariants.length > 0
+    ? await AcademicYear.findOne({ year: { $in: yearVariants } }).select('_id year status').lean()
+    : null;
+
+  return {
+    academicYear: resolvedAcademicYear,
+    academicYearId: resolvedAcademicYearDoc?._id || enrollment?.academicYearId || null
+  };
+};
 
 // Get student fees with concessions (main student table for Super Admin & Admin)
 export const getStudentFeesWithConcessions = async (req, res) => {
@@ -73,14 +111,13 @@ export const getStudentFeesWithConcessions = async (req, res) => {
 
       const originalAmount = c.originalAmount || 0;
       const lessAmount = c.lessAmount || 0;
-      const netPayable = c.status === 'Active'
-        ? Math.max(0, originalAmount - lessAmount)
-        : originalAmount;
+      const netPayable = getConcessionNetPayable(originalAmount, lessAmount, c.status);
 
       return {
         _id: c.studentFeeId || c._id,
         studentId: c.studentId._id,
         studentFeeId: c.studentFeeId,
+        academicYearId: c.academicYearId || null,
         admissionNumber: c.studentId.admissionNumber,
         studentName: c.studentId.studentName,
         className: c.className || c.studentId.currentClass,
@@ -109,7 +146,7 @@ export const getStudentFeesWithConcessions = async (req, res) => {
 // Create / Assign Concession (handles Single and Bulk assignment)
 export const createConcession = async (req, res) => {
   try {
-    const { studentIds, feeCategoryId, academicYear, lessAmount, reason, remarks } = req.body;
+    const { studentIds, feeCategoryId, academicYear, academicYearId, lessAmount, reason, remarks } = req.body;
 
     // 1. Validation
     if (!studentIds || !Array.isArray(studentIds) || studentIds.length === 0) {
@@ -142,11 +179,20 @@ export const createConcession = async (req, res) => {
         return res.status(404).json({ error: `Student with ID ${studentId} not found.` });
       }
 
+      const academicYearContext = await resolveAcademicYearContext({
+        academicYear,
+        student
+      });
+      if (!academicYearContext.academicYear || !academicYearContext.academicYearId) {
+        return res.status(400).json({ error: `Academic year is required for ${student.studentName}. Please ensure the academic year exists before assigning a concession.` });
+      }
+
       // Find or create StudentFee record
       let studentFee = await StudentFee.findOne({
         studentId,
         feeCategoryId,
-        className: student.currentClass
+        className: student.currentClass,
+        academicYear: academicYearContext.academicYear
       });
 
       if (!studentFee) {
@@ -181,8 +227,6 @@ export const createConcession = async (req, res) => {
           });
         }
         
-        const resolvedAY = academicYear || student.academicYear || '2028-2029';
-        
         // Create the StudentFee record on the fly
         studentFee = await StudentFee.create({
           studentId,
@@ -192,7 +236,7 @@ export const createConcession = async (req, res) => {
           remainingAmount: totalAmount,
           className: student.currentClass,
           section: student.section,
-          academicYear: resolvedAY
+          academicYear: academicYearContext.academicYear
         });
       }
 
@@ -206,6 +250,8 @@ export const createConcession = async (req, res) => {
       // Deactivate any existing active concession for this student fee category
       const existingConcession = await StudentFeeConcession.findOne({
         studentId,
+        studentFeeId: studentFee._id,
+        academicYear: academicYearContext.academicYear,
         feeCategoryId,
         status: 'Active'
       });
@@ -224,14 +270,12 @@ export const createConcession = async (req, res) => {
         });
       }
 
-      // Resolve academic year from student
-      const resolvedAY = academicYear || student.academicYear || '2028-2029';
-
       // Create new concession
       const newConcession = await StudentFeeConcession.create({
         studentId,
         studentFeeId: studentFee._id,
-        academicYear: resolvedAY,
+        academicYear: academicYearContext.academicYear,
+        academicYearId: academicYearId || academicYearContext.academicYearId || null,
         className: studentFee.className || student.currentClass,
         section: student.section,
         feeCategoryId,
@@ -287,8 +331,8 @@ export const updateConcession = async (req, res) => {
       return res.status(404).json({ error: 'Concession not found.' });
     }
 
-    if (concession.status !== 'Active') {
-      return res.status(400).json({ error: 'Cannot update an inactive or cancelled concession.' });
+    if (!['Active', 'Inactive'].includes(concession.status)) {
+      return res.status(400).json({ error: 'Cannot update a completed, expired, or cancelled concession.' });
     }
 
     // Retrieve student fee to check original fee limit
@@ -382,10 +426,10 @@ export const getStudentNetFees = async (req, res) => {
       .populate('feeCategoryId')
       .lean();
 
-    // 2. Fetch all concessions (active and inactive) for this student
+    // 2. Fetch all concessions for this student
     const concessions = await StudentFeeConcession.find({
       studentId,
-      status: { $in: ['Active', 'Inactive'] }
+      status: { $in: ['Active', 'Inactive', 'Completed', 'Expired', 'Cancelled'] }
     }).lean();
 
     // 3. Fetch all fee categories in the system
@@ -437,20 +481,16 @@ export const getStudentNetFees = async (req, res) => {
       }
 
       // Find concession for this category (either via studentFeeId or feeCategoryId)
-      const concession = concessions.find(c => 
-        (fee && c.studentFeeId.toString() === fee._id.toString()) || 
-        c.feeCategoryId.toString() === cat._id.toString()
-      );
+      const concession = concessions.find(c => fee && c.studentFeeId.toString() === fee._id.toString());
 
       const lessAmount = concession ? concession.lessAmount : 0;
-      const netPayable = (concession && concession.status === 'Active')
-        ? Math.max(0, originalAmount - lessAmount)
-        : originalAmount;
+      const netPayable = concession ? getConcessionNetPayable(originalAmount, lessAmount, concession.status) : originalAmount;
 
       return {
         feeCategoryId: cat._id,
         feeCategoryName: cat.name,
         academicYear: fee ? fee.academicYear : (student.academicYear || ''),
+        academicYearId: fee?.academicYearId || concession?.academicYearId || null,
         className: fee ? fee.className : student.currentClass,
         originalAmount,
         lessAmount,
@@ -519,6 +559,10 @@ export const toggleConcessionStatus = async (req, res) => {
 
     if (!concession) {
       return res.status(404).json({ error: 'Concession not found.' });
+    }
+
+    if (!['Active', 'Inactive'].includes(concession.status)) {
+      return res.status(400).json({ error: 'Only active or inactive concessions can be toggled.' });
     }
 
     const oldStatus = concession.status;
