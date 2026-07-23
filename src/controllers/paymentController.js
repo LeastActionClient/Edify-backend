@@ -213,7 +213,7 @@ const formatReceiptDate = (value) => {
   if (!value) return '-';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '-';
-  return date.toLocaleDateString();
+  return date.toLocaleDateString('en-GB');
 };
 
 const drawReceiptCopy = ({
@@ -233,12 +233,12 @@ const drawReceiptCopy = ({
   const innerX = x + paddingX;
   const innerY = y + paddingY;
   const innerWidth = width - paddingX * 2;
-  const descWidth = Math.round(innerWidth * 0.38);
-  const totalWidth = Math.round(innerWidth * 0.13);
-  const lessWidth = Math.round(innerWidth * 0.11);
-  const paidWidth = Math.round(innerWidth * 0.13);
+  const descWidth = Math.min(Math.round(mmToPt(34)), Math.round(innerWidth * 0.38));
+  const totalWidth = Math.min(Math.round(mmToPt(17)), Math.round(innerWidth * 0.15));
+  const lessWidth = Math.min(Math.round(mmToPt(17)), Math.round(innerWidth * 0.15));
+  const paidWidth = Math.min(Math.round(mmToPt(17)), Math.round(innerWidth * 0.15));
   const balanceWidth = innerWidth - descWidth - totalWidth - lessWidth - paidWidth;
-  const rowHeight = mmToPt(4.4);
+  const rowHeight = mmToPt(5.8);
 
   const student = payment.studentId || payment.student || {};
   const application = payment.applicationId || payment.application || {};
@@ -251,65 +251,75 @@ const drawReceiptCopy = ({
     .strokeColor('#CBD5E1')
     .stroke();
 
+  const logoSize = mmToPt(12);
+  const headerTitleX = innerX + logoSize + mmToPt(2.5);
+  const headerTitleWidth = innerWidth - logoSize - mmToPt(34);
+
   try {
     const imageBuffer = Buffer.from(logoBase64, 'base64');
     doc.image(imageBuffer, innerX, innerY + mmToPt(0.1), {
-      width: mmToPt(10)
+      width: logoSize
     });
   } catch (imageError) {
     console.error('Error loading receipt logo', imageError);
   }
 
-  doc.fillColor('#0F172A').font('Helvetica-Bold').fontSize(10.8)
-    .text('KASTHURI NURSERY AND PRIMARY SCHOOL', innerX + mmToPt(12), innerY + mmToPt(0.2), {
-      width: innerWidth - mmToPt(24),
+  doc.fillColor('#0F172A').font('Helvetica-Bold').fontSize(8.0)
+    .text('KASTHURI NURSERY AND PRIMARY SCHOOL', headerTitleX, innerY + mmToPt(0.1), {
+      width: headerTitleWidth,
+      align: 'center',
+      ellipsis: true
+    });
+  // doc.text('SCHOOL', headerTitleX, innerY + mmToPt(3.4), {
+  //     width: headerTitleWidth,
+  //     align: 'center'
+  //   });
+
+  doc.fillColor('#475569').font('Helvetica').fontSize(6.0)
+    .text('No.15 & 44 Eda Street, Saidapet, Vellore - 632 012.', innerX, innerY + mmToPt(6.0), {
+      width: innerWidth,
+      align: 'center'
+    })
+    .text('Phone: 0416-2211877, +91 97919 50179 | Email: Kasthurinurseryschool@gmail.com', innerX, innerY + mmToPt(8.7), {
+      width: innerWidth,
       align: 'center'
     });
 
-  // doc.fillColor('#475569').font('Helvetica').fontSize(6.6)
-  //   .text('No.15 & 44 Eda Street, Saidapet, Vellore - 632 012.', innerX, innerY + mmToPt(3.9), {
-  //     width: innerWidth,
-  //     align: 'center'
-  //   })
-    // .text('Phone: 0416-2211877, +91 97919 50179 | Email: Kasthurinurseryschool@gmail.com', innerX, innerY + mmToPt(6.7), {
-    //   width: innerWidth,
-    //   align: 'center'
-    // });
+  doc.fillColor('#0F172A').font('Helvetica-Bold').fontSize(8.6)
+    .text('FEE RECEIPT', innerX + innerWidth - mmToPt(28), innerY + mmToPt(0.2), { width: mmToPt(26), align: 'right' });
 
-  doc.fillColor('#0F172A').font('Helvetica-Bold').fontSize(11.5)
-    .text('FEE RECEIPT', innerX + innerWidth - mmToPt(40), innerY + mmToPt(0.3), { width: mmToPt(38), align: 'right' });
-
-  const headerBottom = innerY + mmToPt(11.8);
+  const headerBottom = innerY + mmToPt(10.6);
   doc.moveTo(innerX, headerBottom).lineTo(innerX + innerWidth, headerBottom).strokeColor('#CBD5E1').stroke();
 
-  const detailTop = headerBottom + mmToPt(1.0);
-  const detailGap = mmToPt(8);
+  const detailTop = headerBottom + mmToPt(0.7);
+  const detailGap = mmToPt(8.5);
   const detailColumnWidth = (innerWidth - detailGap) / 2;
   const leftColX = innerX + mmToPt(3);
   const rightColX = innerX + detailColumnWidth + detailGap;
-  const lineGap = mmToPt(4.0);
+  const lineGap = mmToPt(4.5);
 
-  doc.fillColor('#0F172A').font('Helvetica').fontSize(8.8);
+  doc.fillColor('#0F172A').font('Helvetica').fontSize(7.3);
   if (payment.paymentType === 'APPLICATION') {
-    doc.text(`Application No: ${application.applicationId || '-'}`, leftColX, detailTop, { width: detailColumnWidth - mmToPt(4) });
-    doc.text(`Receipt No: ${receiptNumber}`, leftColX, detailTop + lineGap, { width: detailColumnWidth - mmToPt(4) });
-    doc.text(`Applicant Name: ${application.studentName || '-'}`, leftColX, detailTop + lineGap * 2, { width: detailColumnWidth - mmToPt(4) });
+    doc.text(`Application No: ${application.applicationId || '-'}`, leftColX, detailTop, { width: detailColumnWidth - mmToPt(4), ellipsis: true });
+    doc.text(`Receipt No: ${receiptNumber}`, leftColX, detailTop + lineGap, { width: detailColumnWidth - mmToPt(4), ellipsis: true });
+    doc.text(`Applicant Name: ${application.studentName || '-'}`, leftColX, detailTop + lineGap * 2, { width: detailColumnWidth - mmToPt(4), ellipsis: true });
 
-    doc.text(`Applying Class: ${application.applyingClass || '-'}`, rightColX, detailTop, { width: detailColumnWidth - mmToPt(4), align: 'right' });
-    doc.text(`Date: ${receiptDate}`, rightColX, detailTop + lineGap, { width: detailColumnWidth - mmToPt(4), align: 'right' });
-    doc.text(`Payment Mode: ${payment.paymentMethod || '-'}`, rightColX, detailTop + lineGap * 2, { width: detailColumnWidth - mmToPt(4), align: 'right' });
+    doc.text(`Applying Class: ${application.applyingClass || '-'}`, rightColX, detailTop, { width: detailColumnWidth - mmToPt(4), align: 'right', ellipsis: true });
+    doc.text(`Date: ${receiptDate}`, rightColX, detailTop + lineGap, { width: detailColumnWidth - mmToPt(4), align: 'right', ellipsis: true });
+    doc.text(`Payment Mode: ${payment.paymentMethod || '-'}`, rightColX, detailTop + lineGap * 2, { width: detailColumnWidth - mmToPt(4), align: 'right', ellipsis: true });
   } else {
-    doc.text(`Class & Section: ${student.currentClass || '-'}`, leftColX, detailTop, { width: detailColumnWidth - mmToPt(4) });
-    doc.text(`Receipt No: ${receiptNumber}`, leftColX, detailTop + lineGap, { width: detailColumnWidth - mmToPt(4) });
-    doc.text(`Student Name: ${student.studentName || '-'}`, leftColX, detailTop + lineGap * 2, { width: detailColumnWidth - mmToPt(4) });
+    doc.text(`Admission No: ${student.admissionNumber || '-'}`, leftColX, detailTop, { width: detailColumnWidth - mmToPt(4), ellipsis: true });
+    doc.text(`Student Name: ${student.studentName || '-'}`, leftColX, detailTop + lineGap, { width: detailColumnWidth - mmToPt(4), ellipsis: true });
+    doc.text(`Class & Section: ${student.currentClass || '-'} ${student.section || ''}`, leftColX, detailTop + lineGap * 2, { width: detailColumnWidth - mmToPt(4), ellipsis: true });
 
-    doc.text(` Admission No: ${student.admissionNumber || '-'} ${student.section || ''}`, rightColX, detailTop, { width: detailColumnWidth - mmToPt(4), align: 'right' });
-    doc.text(`Date: ${receiptDate}`, rightColX, detailTop + lineGap, { width: detailColumnWidth - mmToPt(4), align: 'right' });
-    doc.text(`Payment Mode: ${payment.paymentMethod || '-'}`, rightColX, detailTop + lineGap * 2, { width: detailColumnWidth - mmToPt(4), align: 'right' });
+    doc.text(`Receipt No: ${receiptNumber}`, rightColX, detailTop, { width: detailColumnWidth - mmToPt(4), align: 'right', ellipsis: true });
+    doc.text(`Date: ${receiptDate}`, rightColX, detailTop + lineGap, { width: detailColumnWidth - mmToPt(4), align: 'right', ellipsis: true });
+    doc.text(`Payment Mode: ${payment.paymentMethod || '-'}`, rightColX, detailTop + lineGap * 2, { width: detailColumnWidth - mmToPt(4), align: 'right', ellipsis: true });
   }
 
-  const tableTop = detailTop + lineGap * 3 + mmToPt(1.0);
-  const tableHeaderHeight = mmToPt(4.4);
+  const detailLines = 3;
+  const tableTop = detailTop + lineGap * detailLines + mmToPt(1.5);
+  const tableHeaderHeight = mmToPt(4.6);
   const tableWidth = innerWidth;
 
   doc.roundedRect(innerX, tableTop, tableWidth, tableHeaderHeight + groupedRows.length * rowHeight, 1.5)
@@ -320,7 +330,7 @@ const drawReceiptCopy = ({
   doc.rect(innerX, tableTop, tableWidth, tableHeaderHeight)
     .fillAndStroke('#F1F5F9', '#CBD5E1');
 
-  doc.fillColor('#334155').font('Helvetica-Bold').fontSize(8.2);
+  doc.fillColor('#334155').font('Helvetica-Bold').fontSize(6.8);
   doc.text('Fee Description', innerX + mmToPt(1.2), tableTop + mmToPt(1.0), { width: descWidth - mmToPt(2), ellipsis: true });
   doc.text('Total', innerX + descWidth, tableTop + mmToPt(1.0), { width: totalWidth, align: 'right' });
   doc.text('Less', innerX + descWidth + totalWidth, tableTop + mmToPt(1.2), { width: lessWidth, align: 'right' });
@@ -328,7 +338,7 @@ const drawReceiptCopy = ({
   doc.text('Balance', innerX + descWidth + totalWidth + lessWidth + paidWidth, tableTop + mmToPt(1.0), { width: balanceWidth - mmToPt(1), align: 'right' });
 
   let rowTop = tableTop + tableHeaderHeight;
-  doc.fillColor('#0F172A').font('Helvetica').fontSize(8.4);
+  doc.fillColor('#0F172A').font('Helvetica').fontSize(6.4);
 
   if (groupedRows.length === 0) {
     doc.text('No fee details available.', innerX, rowTop + mmToPt(1.5), {
@@ -339,31 +349,31 @@ const drawReceiptCopy = ({
     groupedRows.forEach((row, index) => {
       const rowY = rowTop + index * rowHeight;
       doc.moveTo(innerX, rowY).lineTo(innerX + tableWidth, rowY).strokeColor('#E2E8F0').stroke();
-      doc.text(row.displayName, innerX + mmToPt(1.2), rowY + mmToPt(0.7), { width: descWidth - mmToPt(2), ellipsis: true });
-      doc.text(formatReceiptCurrency(row.totalAmount), innerX + descWidth, rowY + mmToPt(0.7), { width: totalWidth - mmToPt(1), align: 'right' });
-      doc.text(formatReceiptCurrency(row.discountAmount), innerX + descWidth + totalWidth, rowY + mmToPt(0.7), { width: lessWidth - mmToPt(1), align: 'right' });
-      doc.text(formatReceiptCurrency(row.paidAmount), innerX + descWidth + totalWidth + lessWidth, rowY + mmToPt(0.7), { width: paidWidth - mmToPt(1), align: 'right' });
-      doc.text(formatReceiptCurrency(row.balanceAmount), innerX + descWidth + totalWidth + lessWidth + paidWidth, rowY + mmToPt(0.7), { width: balanceWidth - mmToPt(1), align: 'right' });
+      doc.text(row.displayName, innerX + mmToPt(1.2), rowY + mmToPt(1.0), { width: descWidth - mmToPt(2), ellipsis: true });
+      doc.text(formatReceiptCurrency(row.totalAmount), innerX + descWidth, rowY + mmToPt(1.0), { width: totalWidth - mmToPt(1), align: 'right', ellipsis: true });
+      doc.text(formatReceiptCurrency(row.discountAmount), innerX + descWidth + totalWidth, rowY + mmToPt(1.0), { width: lessWidth - mmToPt(1), align: 'right', ellipsis: true });
+      doc.text(formatReceiptCurrency(row.paidAmount), innerX + descWidth + totalWidth + lessWidth, rowY + mmToPt(1.0), { width: paidWidth - mmToPt(1), align: 'right', ellipsis: true });
+      doc.text(formatReceiptCurrency(row.balanceAmount), innerX + descWidth + totalWidth + lessWidth + paidWidth, rowY + mmToPt(1.0), { width: balanceWidth - mmToPt(1), align: 'right', ellipsis: true });
     });
   }
 
   const tableBottom = rowTop + groupedRows.length * rowHeight;
   doc.moveTo(innerX, tableBottom).lineTo(innerX + tableWidth, tableBottom).strokeColor('#E2E8F0').stroke();
 
-  const summaryTop = tableBottom + mmToPt(1.0);
-  const summaryWidth = mmToPt(70);
+  const summaryTop = tableBottom + mmToPt(0.8);
+  const summaryWidth = mmToPt(66);
   const summaryX = innerX + innerWidth - summaryWidth;
 
-  doc.roundedRect(summaryX, summaryTop, summaryWidth, mmToPt(21), 1.2)
+  doc.roundedRect(summaryX, summaryTop, summaryWidth, mmToPt(16), 1.2)
     .lineWidth(0.4)
     .strokeColor('#CBD5E1')
     .stroke();
 
-  doc.fillColor('#334155').font('Helvetica-Bold').fontSize(8.6)
+  doc.fillColor('#334155').font('Helvetica-Bold').fontSize(7.2)
     .text('Grand Total', summaryX + mmToPt(1), summaryTop + mmToPt(0.6), { width: summaryWidth - mmToPt(2) });
 
-  doc.fillColor('#0F172A').font('Helvetica').fontSize(8.6);
-  const summaryLineY = summaryTop + mmToPt(4.0);
+  doc.fillColor('#0F172A').font('Helvetica').fontSize(7.2);
+  const summaryLineY = summaryTop + mmToPt(4.1);
   doc.text('Total Amount', summaryX + mmToPt(1), summaryLineY, { width: summaryWidth - mmToPt(16) });
   doc.font('Helvetica-Bold');
   doc.text(formatReceiptCurrency(totals.totalAmount), summaryX + mmToPt(16), summaryLineY, { width: summaryWidth - mmToPt(17), align: 'right' });
@@ -389,24 +399,22 @@ const drawReceiptSheet = ({
   const cellWidth = (contentWidth - columnGap) / 2;
   const cellHeight = (contentHeight - rowGap) / 2;
 
-  for (let index = 0; index < 4; index += 1) {
-    const col = index % 2;
-    const row = Math.floor(index / 2);
-    const cellX = contentX + col * (cellWidth + columnGap);
-    const cellY = contentY + row * (cellHeight + rowGap);
+  doc.save();
+  doc.rect(contentX, contentY, cellWidth, cellHeight).clip();
 
-    drawReceiptCopy({
-      doc,
-      payment,
-      invoice,
-      groupedRows,
-      totals,
-      x: cellX,
-      y: cellY,
-      width: cellWidth,
-      height: cellHeight
-    });
-  }
+  drawReceiptCopy({
+    doc,
+    payment,
+    invoice,
+    groupedRows,
+    totals,
+    x: contentX,
+    y: contentY,
+    width: cellWidth,
+    height: cellHeight
+  });
+
+  doc.restore();
 };
 
 const getInvoicePaymentData = async (id) => {
@@ -843,8 +851,6 @@ export const getPaymentHistory = async (req, res) => {
     res.status(500).json({ error: 'Error fetching payments' });
   }
 };
-
-import SVGtoPDF from 'svg-to-pdfkit';
 
 export const generateInvoicePDF = async (req, res) => {
   try {
