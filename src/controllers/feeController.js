@@ -347,9 +347,13 @@ export const assignBulkFee = async (req, res) => {
       whereClause.section = sectionName;
     }
 
-    const students = await Student.find(whereClause);
+    const students = await Student.find(whereClause)
+      .select('_id currentClass section academicYear includedChargesTotal activitiesTotal')
+      .lean();
 
-    const validCategories = await FeeCategory.find();
+    const validCategories = await FeeCategory.find()
+      .select('_id name mandatory')
+      .lean();
     const validCatMap = new Map(validCategories.map(c => [c._id.toString(), c]));
 
     const defaultFeesToSave = fees.filter(f => {
@@ -398,20 +402,61 @@ export const assignBulkFee = async (req, res) => {
       return;
     }
 
+    const studentIds = students.map((student) => student._id);
+    const existingStudentFees = await StudentFee.find({ studentId: { $in: studentIds } })
+      .select('_id studentId feeCategoryId totalAmount paidAmount remainingAmount uniformDetails className academicYear')
+      .lean();
+
+    const feesByStudent = new Map();
+    for (const fee of existingStudentFees) {
+      const studentId = fee.studentId.toString();
+      if (!feesByStudent.has(studentId)) {
+        feesByStudent.set(studentId, []);
+      }
+      feesByStudent.get(studentId).push(fee);
+    }
+
+    const feeOps = [];
+    const studentOps = [];
+    const assignedCatIds = new Set(Object.keys(feesJson));
+
     for (const student of students) {
       const studentId = student._id;
-      const existingStudentFees = await StudentFee.find({ studentId });
-      const existingFeeMap = new Map(existingStudentFees.map(f => [f.feeCategoryId.toString(), f]));
-      const assignedCatIds = new Set(Object.keys(feesJson));
+      const studentIdStr = studentId.toString();
+      const currentFees = feesByStudent.get(studentIdStr) || [];
+      const feesByCategory = new Map();
+      const finalFeesById = new Map();
+      const deletedFeeIds = new Set();
+
+      for (const fee of currentFees) {
+        finalFeesById.set(fee._id.toString(), { ...fee });
+        const catIdStr = fee.feeCategoryId.toString();
+        if (!feesByCategory.has(catIdStr)) {
+          feesByCategory.set(catIdStr, []);
+        }
+        feesByCategory.get(catIdStr).push(fee);
+      }
+
+      const queueDeleteFee = (feeId) => {
+        const feeIdStr = feeId.toString();
+        if (deletedFeeIds.has(feeIdStr)) return;
+        deletedFeeIds.add(feeIdStr);
+        finalFeesById.delete(feeIdStr);
+        feeOps.push({
+          deleteOne: {
+            filter: { _id: feeId }
+          }
+        });
+      };
 
       for (const catId of Object.keys(feesJson)) {
         const cat = validCatMap.get(catId);
         if (!cat) continue;
 
-        const isMandatory = cat.mandatory;
-        const existing = existingFeeMap.get(catId);
+        const catKey = catId.toString();
+        const existingList = feesByCategory.get(catKey) || [];
+        const existing = existingList[0];
         let amount = 0;
-        let uniformDetailsToSave = undefined;
 
         if (cat.name.toLowerCase() === 'uniform') {
           const pricing = feesJson[catId]?.pricing || {};
@@ -420,66 +465,91 @@ export const assignBulkFee = async (req, res) => {
           const topLen = parseFloat(existing?.uniformDetails?.topLength || 0);
           const bottomLen = parseFloat(existing?.uniformDetails?.bottomLength || 0);
           amount = (topLen * topPrice) + (bottomLen * bottomPrice);
-          uniformDetailsToSave = {
-            topLength: topLen,
-            bottomLength: bottomLen
-          };
         } else {
           const feeConfig = feesJson[catId];
           amount = typeof feeConfig === 'number' ? feeConfig : parseFloat(feeConfig?.amount || 0);
         }
 
-        if (isMandatory) {
-          if (existing) {
-            if ((existing.paidAmount || 0) === 0) {
-              existing.totalAmount = amount;
-              existing.remainingAmount = amount;
-              await existing.save();
-            }
-          } else if (amount > 0) {
-            await StudentFee.create({
-              studentId,
-              feeCategoryId: catId,
-              totalAmount: amount,
-              remainingAmount: amount,
-              paidAmount: 0,
-              className: student.currentClass,
-              academicYear: student.academicYear
+        if (existing) {
+          const existingId = existing._id.toString();
+          if ((existing.paidAmount || 0) === 0) {
+            feeOps.push({
+              updateOne: {
+                filter: { _id: existing._id },
+                update: {
+                  $set: {
+                    totalAmount: amount,
+                    remainingAmount: Math.max(0, amount - (existing.paidAmount || 0))
+                  }
+                }
+              }
             });
+            const finalFee = finalFeesById.get(existingId);
+            if (finalFee) {
+              finalFee.totalAmount = amount;
+              finalFee.remainingAmount = Math.max(0, amount - (existing.paidAmount || 0));
+            }
+          }
+        } else if (amount > 0) {
+          const newFee = {
+            studentId,
+            feeCategoryId: cat._id,
+            totalAmount: amount,
+            remainingAmount: amount,
+            paidAmount: 0,
+            className: student.currentClass,
+            academicYear: student.academicYear
+          };
+          feeOps.push({
+            insertOne: {
+              document: newFee
+            }
+          });
+          finalFeesById.set(`new-${studentIdStr}-${catKey}`, newFee);
+        }
+
+        for (const extra of existingList.slice(1)) {
+          if ((extra.paidAmount || 0) === 0) {
+            queueDeleteFee(extra._id);
           }
         }
       }
 
-      for (const existing of existingStudentFees) {
+      for (const existing of currentFees) {
         const catIdStr = existing.feeCategoryId.toString();
-        if (!assignedCatIds.has(catIdStr)) {
-          if (existing.paidAmount === 0) {
-            await StudentFee.findByIdAndDelete(existing._id);
+        if (!assignedCatIds.has(catIdStr) && (existing.paidAmount || 0) === 0) {
+          queueDeleteFee(existing._id);
+        }
+      }
+
+      const finalFees = Array.from(finalFeesById.values());
+      const baseFeeTotal = finalFees.reduce((sum, fee) => {
+        const cat = validCatMap.get(fee.feeCategoryId.toString());
+        return cat?.mandatory ? sum + (fee.totalAmount || 0) : sum;
+      }, 0);
+      const grandTotal = finalFees.reduce((sum, fee) => sum + (fee.totalAmount || 0), 0)
+        + (student.includedChargesTotal || 0)
+        + (student.activitiesTotal || 0);
+
+      studentOps.push({
+        updateOne: {
+          filter: { _id: studentId },
+          update: {
+            $set: {
+              baseFee: baseFeeTotal,
+              grandTotal
+            }
           }
         }
-      }
-
-      const updatedStudentFees = await StudentFee.find({ studentId });
-      let baseFeeTotal = 0;
-      let grandTotal = 0;
-
-      for (const f of updatedStudentFees) {
-        const cat = validCatMap.get(f.feeCategoryId.toString());
-        const isMandatory = cat ? cat.mandatory : false;
-        const amt = f.totalAmount || 0;
-
-        if (isMandatory) {
-          baseFeeTotal += amt;
-        }
-        grandTotal += amt;
-      }
-
-      grandTotal += (student.includedChargesTotal || 0) + (student.activitiesTotal || 0);
-
-      await Student.findByIdAndUpdate(studentId, {
-        baseFee: baseFeeTotal,
-        grandTotal: grandTotal
       });
+    }
+
+    if (feeOps.length > 0) {
+      await StudentFee.bulkWrite(feeOps, { ordered: false });
+    }
+
+    if (studentOps.length > 0) {
+      await Student.bulkWrite(studentOps, { ordered: false });
     }
 
     res.status(201).json({ message: `Assigned to class successfully` });
