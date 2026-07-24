@@ -280,10 +280,10 @@ const drawReceiptCopy = ({
       width: innerWidth,
       align: 'center'
     })
-    .text('Phone: 0416-2211877, +91 97919 50179 | Email: Kasthurinurseryschool@gmail.com', innerX, innerY + mmToPt(8.7), {
-      width: innerWidth,
-      align: 'center'
-    });
+    // .text('Phone: 0416-2211877, +91 97919 50179 | Email: Kasthurinurseryschool@gmail.com', innerX, innerY + mmToPt(8.7), {
+    //   width: innerWidth,
+    //   align: 'center'
+    // });
 
   doc.fillColor('#0F172A').font('Helvetica-Bold').fontSize(8.6)
     .text('FEE RECEIPT', innerX + innerWidth - mmToPt(28), innerY + mmToPt(0.2), { width: mmToPt(26), align: 'right' });
