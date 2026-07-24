@@ -14,7 +14,7 @@ const generateInvoiceNumber = async () => {
     .select('invoiceNumber')
     .sort({ invoiceNumber: -1 });
 
-  let nextCount = 1;
+  let nextCount = 101;
   if (lastInvoice && lastInvoice.invoiceNumber) {
     const parts = lastInvoice.invoiceNumber.split('-');
     if (parts.length === 3) {
@@ -376,7 +376,7 @@ const drawReceiptCopy = ({
   const summaryLineY = summaryTop + mmToPt(4.1);
   doc.text('Total Amount', summaryX + mmToPt(1), summaryLineY, { width: summaryWidth - mmToPt(16) });
   doc.font('Helvetica-Bold');
-  doc.text(formatReceiptCurrency(totals.totalAmount), summaryX + mmToPt(16), summaryLineY, { width: summaryWidth - mmToPt(17), align: 'right' });
+  doc.text(formatReceiptCurrency(totals.paidAmount), summaryX + mmToPt(16), summaryLineY, { width: summaryWidth - mmToPt(17), align: 'right' });
 
   doc.restore();
 };
