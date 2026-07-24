@@ -1033,6 +1033,12 @@ export const bulkImportStudents = async (req, res) => {
     const errors = [];
 
     const batchAdmissionNumbers = new Set();
+    const existingStudents = await Student.find({}, 'admissionNumber').lean();
+    const existingAdmissionNumbers = new Set(
+      existingStudents
+        .map(student => String(student.admissionNumber || '').trim().toLowerCase())
+        .filter(Boolean)
+    );
 
     for (let i = 0; i < rawData.length; i++) {
       const rawRow = rawData[i];
@@ -1069,10 +1075,7 @@ export const bulkImportStudents = async (req, res) => {
       batchAdmissionNumbers.add(admissionNumber.toLowerCase());
 
       // Duplicate Check
-      const existingStudent = await Student.findOne({ 
-        admissionNumber: { $regex: new RegExp(`^${admissionNumber.trim()}$`, 'i') } 
-      });
-      if (existingStudent) {
+      if (existingAdmissionNumbers.has(admissionNumber.toLowerCase())) {
         errors.push(`Row ${i + 2}: Duplicate Admission Number "${admissionNumber}" already exists in database.`);
         duplicateCount++;
         continue;
@@ -1151,6 +1154,7 @@ export const bulkImportStudents = async (req, res) => {
         };
 
         const studentRecord = await Student.create(studentPayload);
+        existingAdmissionNumbers.add(admissionNumber.toLowerCase());
 
         await StudentEnrollment.create({
           studentId: studentRecord._id,
@@ -1181,21 +1185,35 @@ export const bulkImportStudents = async (req, res) => {
     }
 
     if (req.user && successCount > 0) {
-      await ActivityLog.create({
-        userId: req.user.id,
-        action: 'BULK_IMPORT_STUDENTS',
-        details: `Imported ${successCount} students into class ${currentClass}`
-      });
+      try {
+        await ActivityLog.create({
+          userId: req.user.id,
+          action: 'BULK_IMPORT_STUDENTS',
+          details: `Imported ${successCount} students into class ${currentClass}`
+        });
+      } catch (activityError) {
+        console.warn('Bulk import activity log failed:', activityError);
+      }
     }
 
-    res.status(201).json({
-      message: 'Import Completed',
+    const hasImportedStudents = successCount > 0;
+    const responsePayload = {
+      message: hasImportedStudents
+        ? (errors.length > 0 ? 'Import completed with some skipped rows' : 'Import completed successfully')
+        : 'No students were imported',
       successCount,
       duplicateCount,
       validationErrorsCount,
       dbErrorsCount,
-      errors
-    });
+      errors,
+      partialSuccess: hasImportedStudents && errors.length > 0
+    };
+
+    if (!hasImportedStudents) {
+      return res.status(400).json(responsePayload);
+    }
+
+    return res.status(200).json(responsePayload);
 
   } catch (error) {
     console.error("Bulk import error:", error);
