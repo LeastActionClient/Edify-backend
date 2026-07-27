@@ -208,7 +208,9 @@ const calculateReceiptTotals = (groupedRows) =>
     }
   );
 
-const formatReceiptCurrency = (value) => `Rs. ${toNumber(value).toFixed(2)}`;
+const formatReceiptAmount = (value) => toNumber(value).toFixed(2);
+const formatReceiptMoney = (value) => formatReceiptAmount(value);
+const formatReceiptCurrency = (value) => formatReceiptAmount(value);
 const formatReceiptDate = (value) => {
   if (!value) return '-';
   const date = new Date(value);
@@ -216,205 +218,481 @@ const formatReceiptDate = (value) => {
   return date.toLocaleDateString('en-GB');
 };
 
-const drawReceiptCopy = ({
-  doc,
-  payment,
-  invoice,
-  groupedRows,
-  totals,
-  x,
-  y,
-  width,
-  height,
-  logoPath
-}) => {
-  const paddingX = mmToPt(2);
-  const paddingY = mmToPt(1.5);
-  const innerX = x + paddingX;
-  const innerY = y + paddingY;
-  const innerWidth = width - paddingX * 2;
-  const descWidth = Math.min(Math.round(mmToPt(34)), Math.round(innerWidth * 0.38));
-  const totalWidth = Math.min(Math.round(mmToPt(17)), Math.round(innerWidth * 0.15));
-  const lessWidth = Math.min(Math.round(mmToPt(17)), Math.round(innerWidth * 0.15));
-  const paidWidth = Math.min(Math.round(mmToPt(17)), Math.round(innerWidth * 0.15));
-  const balanceWidth = innerWidth - descWidth - totalWidth - lessWidth - paidWidth;
-  const rowHeight = mmToPt(5.8);
+const RECEIPT_PAGE_WIDTH_MM = 105;
+const RECEIPT_PAGE_HEIGHT_MM = 148;
+const RECEIPT_MARGIN_MM = 5;
+const RECEIPT_INNER_PADDING_MM = 4;
+const RECEIPT_FOOTER_HEIGHT_MM = 13;
 
+const RECEIPT_COLORS = {
+  orange: '#F58220',
+  lightOrange: '#FDE9D9',
+  darkGrey: '#555555',
+  border: '#ECECEC',
+  alternateRow: '#FFF8F2',
+  text: '#2F2F2F',
+  muted: '#8A8A8A'
+};
+
+const getReceiptLogoSource = () => {
+  const logoPath = path.resolve(process.cwd(), 'public', 'KSlogo.jpg');
+  return fs.existsSync(logoPath) ? logoPath : Buffer.from(logoBase64, 'base64');
+};
+
+const drawReceiptField = (doc, { label, value, x, y, width, align = 'left', accent = false }) => {
+  const labelText = `${label}`;
+  const valueText = value || '-';
+  const valueColor = accent ? RECEIPT_COLORS.orange : RECEIPT_COLORS.text;
+  const labelFontSize = 6.2;
+  const valueFontSize = 7.2;
+  const gap = mmToPt(0.8);
+  const labelWidth = mmToPt(15.2);
+  const colonWidth = doc.widthOfString(':');
+  const valueWidth = Math.max(0, width - labelWidth - colonWidth - gap);
+
+  doc.fillColor(RECEIPT_COLORS.darkGrey)
+    .font('Helvetica-Bold')
+    .fontSize(labelFontSize)
+    .text(labelText, x, y, {
+      width: labelWidth,
+      lineBreak: false,
+      ellipsis: true
+    });
+
+  doc.text(':', x + labelWidth + mmToPt(0.2), y, {
+    width: colonWidth + mmToPt(0.2),
+    lineBreak: false
+  });
+
+  doc.fillColor(valueColor)
+    .font('Helvetica-Bold')
+    .fontSize(valueFontSize)
+    .text(valueText, x + labelWidth + colonWidth + gap, y, {
+      width: valueWidth,
+      align: align === 'right' ? 'right' : 'left',
+      lineBreak: false,
+      ellipsis: true
+    });
+};
+
+const drawReceiptHeader = ({ doc, innerX, innerY, innerWidth, payment, invoice }) => {
   const student = payment.studentId || payment.student || {};
   const application = payment.applicationId || payment.application || {};
-  const receiptNumber = invoice?.invoiceNumber || payment._id?.toString?.() || '-';
-  const receiptDate = formatReceiptDate(payment.paymentDate);
-
-  doc.save();
-  doc.roundedRect(x, y, width, height, 2)
-    .lineWidth(0.5)
-    .strokeColor('#CBD5E1')
-    .stroke();
-
-  const logoSize = mmToPt(12);
-  const headerTitleX = innerX + logoSize + mmToPt(2.5);
-  const headerTitleWidth = innerWidth - logoSize - mmToPt(34);
+  const isApplication = payment.paymentType === 'APPLICATION';
+  const logoWidth = mmToPt(45);
+  const logoHeight = mmToPt(23);
+  const badgeWidth = mmToPt(20);
+  const badgeHeight = mmToPt(10);
+  const badgeX = innerX + innerWidth - badgeWidth;
+  const receiptDateValue = payment.paymentDate || invoice?.generatedDate || payment.createdAt;
+  const paymentModeValue = payment.paymentMethod || payment.paymentMode || payment.mode || '-';
 
   try {
-    const imageBuffer = Buffer.from(logoBase64, 'base64');
-    doc.image(imageBuffer, innerX, innerY + mmToPt(0.1), {
-      width: logoSize
+    doc.image(getReceiptLogoSource(), innerX, innerY + mmToPt(0.8), {
+      width: logoWidth,
+      height: logoHeight,
+      fit: [logoWidth, logoHeight]
     });
   } catch (imageError) {
     console.error('Error loading receipt logo', imageError);
   }
 
-  doc.fillColor('#0F172A').font('Helvetica-Bold').fontSize(8.0)
-    .text('KASTHURI NURSERY AND PRIMARY SCHOOL', headerTitleX, innerY + mmToPt(0.1), {
-      width: headerTitleWidth,
+  doc.save();
+  doc.roundedRect(badgeX, innerY + mmToPt(1.0), badgeWidth, badgeHeight, mmToPt(4))
+    .fillAndStroke(RECEIPT_COLORS.lightOrange, RECEIPT_COLORS.lightOrange);
+  doc.fillColor('#111111').font('Helvetica-Bold').fontSize(8.4)
+    .text('FEE', badgeX, innerY + mmToPt(3.0), {
+      width: badgeWidth,
       align: 'center',
+      lineBreak: false
+    });
+  doc.text('RECEIPT', badgeX, innerY + mmToPt(7.0), {
+      width: badgeWidth,
+      align: 'center',
+      lineBreak: false
+    });
+  doc.restore();
+
+  const approvedY = innerY + mmToPt(25.2);
+  doc.fillColor(RECEIPT_COLORS.muted).font('Helvetica').fontSize(8.6)
+    .text('Approved by Govt. of Tamilnadu - 2349', innerX, approvedY, {
+      width: innerWidth,
+      align: 'center',
+      lineBreak: false,
       ellipsis: true
     });
-  // doc.text('SCHOOL', headerTitleX, innerY + mmToPt(3.4), {
-  //     width: headerTitleWidth,
-  //     align: 'center'
-  //   });
 
-  doc.fillColor('#475569').font('Helvetica').fontSize(6.0)
-    .text('No.15 & 44 Eda Street, Saidapet, Vellore - 632 012.', innerX, innerY + mmToPt(6.0), {
-      width: innerWidth,
-      align: 'center'
-    })
-    // .text('Phone: 0416-2211877, +91 97919 50179 | Email: Kasthurinurseryschool@gmail.com', innerX, innerY + mmToPt(8.7), {
-    //   width: innerWidth,
-    //   align: 'center'
-    // });
+  const dividerY = innerY + mmToPt(28.6);
+  doc.moveTo(innerX, dividerY).lineTo(innerX + innerWidth, dividerY).lineWidth(0.5).strokeColor(RECEIPT_COLORS.border).stroke();
 
-  doc.fillColor('#0F172A').font('Helvetica-Bold').fontSize(8.6)
-    .text('FEE RECEIPT', innerX + innerWidth - mmToPt(28), innerY + mmToPt(0.2), { width: mmToPt(26), align: 'right' });
+  const infoTop = dividerY + mmToPt(2.0);
+  const colGap = mmToPt(4.0);
+  const leftColWidth = mmToPt(39.0);
+  const rightColWidth = innerWidth - leftColWidth - colGap;
+  const lineGap = mmToPt(5.0);
+  const itemHeight = mmToPt(4.2);
 
-  const headerBottom = innerY + mmToPt(10.6);
-  doc.moveTo(innerX, headerBottom).lineTo(innerX + innerWidth, headerBottom).strokeColor('#CBD5E1').stroke();
-
-  const detailTop = headerBottom + mmToPt(0.7);
-  const detailGap = mmToPt(8.5);
-  const detailColumnWidth = (innerWidth - detailGap) / 2;
-  const leftColX = innerX + mmToPt(3);
-  const rightColX = innerX + detailColumnWidth + detailGap;
-  const lineGap = mmToPt(4.5);
-
-  doc.fillColor('#0F172A').font('Helvetica').fontSize(7.3);
-  if (payment.paymentType === 'APPLICATION') {
-    doc.text(`Application No: ${application.applicationId || '-'}`, leftColX, detailTop, { width: detailColumnWidth - mmToPt(4), ellipsis: true });
-    doc.text(`Receipt No: ${receiptNumber}`, leftColX, detailTop + lineGap, { width: detailColumnWidth - mmToPt(4), ellipsis: true });
-    doc.text(`Applicant Name: ${application.studentName || '-'}`, leftColX, detailTop + lineGap * 2, { width: detailColumnWidth - mmToPt(4), ellipsis: true });
-
-    doc.text(`Applying Class: ${application.applyingClass || '-'}`, rightColX, detailTop, { width: detailColumnWidth - mmToPt(4), align: 'right', ellipsis: true });
-    doc.text(`Date: ${receiptDate}`, rightColX, detailTop + lineGap, { width: detailColumnWidth - mmToPt(4), align: 'right', ellipsis: true });
-    doc.text(`Payment Mode: ${payment.paymentMethod || '-'}`, rightColX, detailTop + lineGap * 2, { width: detailColumnWidth - mmToPt(4), align: 'right', ellipsis: true });
+  if (isApplication) {
+    drawReceiptField(doc, {
+      label: 'Ad. No',
+      value: application.applicationId || '-',
+      x: innerX,
+      y: infoTop,
+      width: leftColWidth,
+      accent: true
+    });
+    drawReceiptField(doc, {
+      label: 'Receipt No',
+      value: payment.invoice?.invoiceNumber || payment._id?.toString?.() || '-',
+      x: innerX + leftColWidth + colGap,
+      y: infoTop,
+      width: rightColWidth,
+      align: 'right'
+    });
+    drawReceiptField(doc, {
+      label: 'S. Name',
+      value: application.studentName || '-',
+      x: innerX,
+      y: infoTop + lineGap,
+      width: leftColWidth,
+      accent: true
+    });
+    drawReceiptField(doc, {
+      label: 'Class & Sec',
+      value: application.applyingClass || '-',
+      x: innerX + leftColWidth + colGap,
+      y: infoTop + lineGap,
+      width: rightColWidth,
+      align: 'right'
+    });
+    drawReceiptField(doc, {
+      label: 'Date',
+      value: formatReceiptDate(receiptDateValue),
+      x: innerX,
+      y: infoTop + lineGap * 2,
+      width: leftColWidth
+    });
+    drawReceiptField(doc, {
+      label: 'Payment Mode',
+      value: String(paymentModeValue || '-').toUpperCase(),
+      x: innerX + leftColWidth + colGap,
+      y: infoTop + lineGap * 2,
+      width: rightColWidth,
+      align: 'right'
+    });
   } else {
-    doc.text(`Admission No: ${student.admissionNumber || '-'}`, leftColX, detailTop, { width: detailColumnWidth - mmToPt(4), ellipsis: true });
-    doc.text(`Student Name: ${student.studentName || '-'}`, leftColX, detailTop + lineGap, { width: detailColumnWidth - mmToPt(4), ellipsis: true });
-    doc.text(`Class & Section: ${student.currentClass || '-'} ${student.section || ''}`, leftColX, detailTop + lineGap * 2, { width: detailColumnWidth - mmToPt(4), ellipsis: true });
-
-    doc.text(`Receipt No: ${receiptNumber}`, rightColX, detailTop, { width: detailColumnWidth - mmToPt(4), align: 'right', ellipsis: true });
-    doc.text(`Date: ${receiptDate}`, rightColX, detailTop + lineGap, { width: detailColumnWidth - mmToPt(4), align: 'right', ellipsis: true });
-    doc.text(`Payment Mode: ${payment.paymentMethod || '-'}`, rightColX, detailTop + lineGap * 2, { width: detailColumnWidth - mmToPt(4), align: 'right', ellipsis: true });
+    drawReceiptField(doc, {
+      label: 'Ad. No',
+      value: student.admissionNumber || '-',
+      x: innerX,
+      y: infoTop,
+      width: leftColWidth
+    });
+    drawReceiptField(doc, {
+      label: 'Receipt No',
+      value: payment.invoice?.invoiceNumber || payment._id?.toString?.() || '-',
+      x: innerX + leftColWidth + colGap,
+      y: infoTop,
+      width: rightColWidth,
+      align: 'left'
+    });
+    drawReceiptField(doc, {
+      label: 'S. Name',
+      value: student.studentName || '-',
+      x: innerX,
+      y: infoTop + lineGap,
+      width: leftColWidth,
+      accent: true
+    });
+    drawReceiptField(doc, {
+      label: 'Date',
+      value: formatReceiptDate(receiptDateValue),
+      x: innerX + leftColWidth + colGap,
+      y: infoTop + lineGap,
+      width: rightColWidth,
+      align: 'left'
+    });
+    drawReceiptField(doc, {
+      label: 'Class & Sec',
+      value: student.currentClass
+        ? `${student.currentClass}${student.section ? ` - ${student.section}` : ''}`
+        : '-',
+      x: innerX,
+      y: infoTop + lineGap * 2,
+      width: leftColWidth
+    });
+    drawReceiptField(doc, {
+      label: 'Payment Mode',
+      value: String(paymentModeValue || '-').toUpperCase(),
+      x: innerX + leftColWidth + colGap,
+      y: infoTop + lineGap * 2,
+      width: rightColWidth,
+      align: 'left'
+    });
   }
 
-  const detailLines = 3;
-  const tableTop = detailTop + lineGap * detailLines + mmToPt(1.5);
-  const tableHeaderHeight = mmToPt(4.6);
-  const tableWidth = innerWidth;
+  const infoBottom = infoTop + lineGap * 2 + itemHeight + mmToPt(0.9);
+  doc.moveTo(innerX, infoBottom).lineTo(innerX + innerWidth, infoBottom).lineWidth(0.5).strokeColor(RECEIPT_COLORS.border).stroke();
 
-  doc.roundedRect(innerX, tableTop, tableWidth, tableHeaderHeight + groupedRows.length * rowHeight, 1.5)
-    .lineWidth(0.4)
-    .strokeColor('#CBD5E1')
-    .stroke();
+  return {
+    infoBottom,
+    headerBottom: infoBottom
+  };
+};
 
-  doc.rect(innerX, tableTop, tableWidth, tableHeaderHeight)
-    .fillAndStroke('#F1F5F9', '#CBD5E1');
+const drawReceiptTable = ({ doc, innerX, innerWidth, topY, groupedRows }) => {
+  const hasDiscountColumn = false;
+  const rowHeight = groupedRows.length > 4 ? mmToPt(4.7) : mmToPt(5.1);
+  const headerHeight = mmToPt(5.6);
+  const tableHeight = headerHeight + Math.max(groupedRows.length, 1) * rowHeight;
+  const tableRadius = mmToPt(3.5);
+  const descWidth = mmToPt(45);
+  const totalWidth = mmToPt(14);
+  const paidWidth = mmToPt(14);
+  const balanceWidth = innerWidth - descWidth - totalWidth - paidWidth;
 
-  doc.fillColor('#334155').font('Helvetica-Bold').fontSize(6.8);
-  doc.text('Fee Description', innerX + mmToPt(1.2), tableTop + mmToPt(1.0), { width: descWidth - mmToPt(2), ellipsis: true });
-  doc.text('Total', innerX + descWidth, tableTop + mmToPt(1.0), { width: totalWidth, align: 'right' });
-  doc.text('Less', innerX + descWidth + totalWidth, tableTop + mmToPt(1.2), { width: lessWidth, align: 'right' });
-  doc.text('Paid', innerX + descWidth + totalWidth + lessWidth, tableTop + mmToPt(1.0), { width: paidWidth, align: 'right' });
-  doc.text('Balance', innerX + descWidth + totalWidth + lessWidth + paidWidth, tableTop + mmToPt(1.0), { width: balanceWidth - mmToPt(1), align: 'right' });
+  doc.save();
+  doc.roundedRect(innerX, topY, innerWidth, tableHeight, tableRadius)
+    .fillAndStroke('#FFFFFF', RECEIPT_COLORS.border);
+  doc.roundedRect(innerX, topY, innerWidth, tableHeight, tableRadius).clip();
 
-  let rowTop = tableTop + tableHeaderHeight;
-  doc.fillColor('#0F172A').font('Helvetica').fontSize(6.4);
+  doc.rect(innerX, topY, innerWidth, headerHeight)
+    .fillAndStroke(RECEIPT_COLORS.orange, RECEIPT_COLORS.orange);
+
+  doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(7.5)
+    .text('Fee Description', innerX + mmToPt(1.8), topY + mmToPt(1.9), {
+      width: descWidth - mmToPt(3),
+      ellipsis: true,
+      lineBreak: false
+    });
+  doc.text('Total', innerX + descWidth, topY + mmToPt(1.9), {
+    width: totalWidth,
+    align: 'right',
+    ellipsis: true,
+    lineBreak: false
+  });
+  doc.text('Paid', innerX + descWidth + totalWidth, topY + mmToPt(1.9), {
+    width: paidWidth,
+    align: 'right',
+    ellipsis: true,
+    lineBreak: false
+  });
+  doc.text('Balance', innerX + descWidth + totalWidth + paidWidth, topY + mmToPt(1.9), {
+    width: balanceWidth - mmToPt(1.2),
+    align: 'right',
+    ellipsis: true,
+    lineBreak: false
+  });
+
+  let rowTop = topY + headerHeight;
 
   if (groupedRows.length === 0) {
-    doc.text('No fee details available.', innerX, rowTop + mmToPt(1.5), {
-      width: tableWidth,
-      align: 'center'
-    });
+    doc.fillColor(RECEIPT_COLORS.darkGrey).font('Helvetica').fontSize(7.5)
+      .text('No fee details available.', innerX, rowTop + mmToPt(2.0), {
+        width: innerWidth,
+        align: 'center'
+      });
   } else {
     groupedRows.forEach((row, index) => {
       const rowY = rowTop + index * rowHeight;
-      doc.moveTo(innerX, rowY).lineTo(innerX + tableWidth, rowY).strokeColor('#E2E8F0').stroke();
-      doc.text(row.displayName, innerX + mmToPt(1.2), rowY + mmToPt(1.0), { width: descWidth - mmToPt(2), ellipsis: true });
-      doc.text(formatReceiptCurrency(row.totalAmount), innerX + descWidth, rowY + mmToPt(1.0), { width: totalWidth - mmToPt(1), align: 'right', ellipsis: true });
-      doc.text(formatReceiptCurrency(row.discountAmount), innerX + descWidth + totalWidth, rowY + mmToPt(1.0), { width: lessWidth - mmToPt(1), align: 'right', ellipsis: true });
-      doc.text(formatReceiptCurrency(row.paidAmount), innerX + descWidth + totalWidth + lessWidth, rowY + mmToPt(1.0), { width: paidWidth - mmToPt(1), align: 'right', ellipsis: true });
-      doc.text(formatReceiptCurrency(row.balanceAmount), innerX + descWidth + totalWidth + lessWidth + paidWidth, rowY + mmToPt(1.0), { width: balanceWidth - mmToPt(1), align: 'right', ellipsis: true });
+      const fillColor = index % 2 === 0 ? '#FFFFFF' : RECEIPT_COLORS.alternateRow;
+
+      doc.rect(innerX, rowY, innerWidth, rowHeight).fill(fillColor);
+      if (index > 0) {
+        doc.moveTo(innerX, rowY).lineTo(innerX + innerWidth, rowY).lineWidth(0.4).strokeColor(RECEIPT_COLORS.border).stroke();
+      }
+
+      doc.fillColor(RECEIPT_COLORS.text).font('Helvetica-Bold').fontSize(7.5)
+        .text(row.displayName, innerX + mmToPt(1.8), rowY + mmToPt(1.2), {
+          width: descWidth - mmToPt(3),
+          ellipsis: true,
+          lineBreak: false
+        });
+      doc.text(formatReceiptMoney(row.totalAmount), innerX + descWidth, rowY + mmToPt(1.2), {
+        width: totalWidth - mmToPt(0.8),
+        align: 'right',
+        ellipsis: true,
+        lineBreak: false
+      });
+      doc.text(formatReceiptMoney(row.paidAmount), innerX + descWidth + totalWidth, rowY + mmToPt(1.2), {
+        width: paidWidth - mmToPt(0.8),
+        align: 'right',
+        ellipsis: true,
+        lineBreak: false
+      });
+      doc.text(formatReceiptMoney(row.balanceAmount), innerX + descWidth + totalWidth + paidWidth, rowY + mmToPt(1.2), {
+        width: balanceWidth - mmToPt(1.2),
+        align: 'right',
+        ellipsis: true,
+        lineBreak: false
+      });
     });
   }
 
-  const tableBottom = rowTop + groupedRows.length * rowHeight;
-  doc.moveTo(innerX, tableBottom).lineTo(innerX + tableWidth, tableBottom).strokeColor('#E2E8F0').stroke();
+  doc.restore();
 
-  const summaryTop = tableBottom + mmToPt(0.8);
-  const summaryWidth = mmToPt(66);
+  return {
+    tableBottom: rowTop + Math.max(groupedRows.length, 1) * rowHeight,
+    rowHeight
+  };
+};
+
+const drawReceiptGrandTotal = ({ doc, innerX, innerWidth, topY, amount }) => {
+  const summaryWidth = mmToPt(46);
+  const summaryHeight = mmToPt(15);
   const summaryX = innerX + innerWidth - summaryWidth;
+  const dividerY = topY + mmToPt(6.0);
 
-  doc.roundedRect(summaryX, summaryTop, summaryWidth, mmToPt(16), 1.2)
-    .lineWidth(0.4)
-    .strokeColor('#CBD5E1')
-    .stroke();
+  doc.save();
+  doc.moveTo(innerX, dividerY).lineTo(summaryX - mmToPt(1.0), dividerY).lineWidth(0.45).strokeColor(RECEIPT_COLORS.border).stroke();
+  doc.fillColor(RECEIPT_COLORS.orange).font('Helvetica-Bold').fontSize(8.6)
+    .text('GRAND TOTAL', summaryX,  topY - mmToPt(4), {
+      width: summaryWidth,
+      align: 'center',
+      lineBreak: false
+    });
 
-  doc.fillColor('#334155').font('Helvetica-Bold').fontSize(7.2)
-    .text('Grand Total', summaryX + mmToPt(1), summaryTop + mmToPt(0.6), { width: summaryWidth - mmToPt(2) });
+    doc.roundedRect(
+  summaryX,
+  topY + mmToPt(1.5),
+  summaryWidth,
+  summaryHeight,
+  mmToPt(2.8)
+).fillAndStroke(
+  RECEIPT_COLORS.lightOrange,
+  RECEIPT_COLORS.lightOrange
+);
 
-  doc.fillColor('#0F172A').font('Helvetica').fontSize(7.2);
-  const summaryLineY = summaryTop + mmToPt(4.1);
-  doc.text('Total Amount', summaryX + mmToPt(1), summaryLineY, { width: summaryWidth - mmToPt(16) });
-  doc.font('Helvetica-Bold');
-  doc.text(formatReceiptCurrency(totals.paidAmount), summaryX + mmToPt(16), summaryLineY, { width: summaryWidth - mmToPt(17), align: 'right' });
+// Same Y position for both texts
+const textY = topY + mmToPt(6);
 
+// Left Label
+doc.fillColor(RECEIPT_COLORS.darkGrey)
+  .font('Helvetica-Bold')
+  .fontSize(7)
+  .text(
+    'TOTAL AMOUNT',
+    summaryX + mmToPt(2),
+    textY,
+    {
+      width: summaryWidth / 2,
+      align: 'left',
+      lineBreak: false
+    }
+  );
+
+// Right Amount
+doc.fillColor(RECEIPT_COLORS.text)
+  .font('Helvetica-Bold')
+  .fontSize(10)
+  .text(
+    `Rs.${formatReceiptMoney(amount)}`,
+    summaryX + summaryWidth / 2,
+    textY,
+    {
+      width: summaryWidth / 2 - mmToPt(2),
+      align: 'right',
+      lineBreak: false
+    }
+  );
+
+  // doc.roundedRect(summaryX, topY + mmToPt(1.5), summaryWidth, summaryHeight, mmToPt(2.8))
+  //   .fillAndStroke(RECEIPT_COLORS.lightOrange, RECEIPT_COLORS.lightOrange);
+  // doc.fillColor(RECEIPT_COLORS.darkGrey).font('Helvetica-Bold').fontSize(7)
+  //   .text('TOTAL AMOUNT', summaryX + mmToPt(1.6), topY + mmToPt(2.8), {
+  //     width: summaryWidth - mmToPt(3.2),
+  //     align: 'left',
+  //     lineBreak: false
+  //   });
+  // doc.fillColor(RECEIPT_COLORS.text).font('Helvetica-Bold').fontSize(11)
+  //   .text(formatReceiptMoney(amount), summaryX + mmToPt(1.6), topY + mmToPt(6.2), {
+  //     width: summaryWidth - mmToPt(3.2),
+  //     align: 'right',
+  //     lineBreak: false,
+  //     ellipsis: true
+  //   });
   doc.restore();
 };
 
-const drawReceiptSheet = ({
+const drawReceiptFooter = ({ doc, x, y, width, height }) => {
+  doc.save();
+  doc.rect(x, y, width, height).fill(RECEIPT_COLORS.orange);
+  doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(7.2)
+    .text('#15 & 44, Eda Street, Saidapet, Vellore - 632 012. Ph : 0416 - 2211877', x, y + mmToPt(4.4), {
+      width,
+      align: 'center',
+      lineBreak: false,
+      ellipsis: true
+    });
+  doc.restore();
+};
+
+const drawReceiptPage = ({
   doc,
   payment,
   invoice,
   groupedRows,
   totals
 }) => {
-  const pageMargin = mmToPt(3);
-  const sheetPadding = mmToPt(3);
-  const columnGap = mmToPt(2.5);
-  const rowGap = mmToPt(2.5);
-  const contentX = pageMargin + sheetPadding;
-  const contentY = pageMargin + sheetPadding;
-  const contentWidth = doc.page.width - pageMargin * 2 - sheetPadding * 2;
-  const contentHeight = doc.page.height - pageMargin * 2 - sheetPadding * 2;
-  const cellWidth = (contentWidth - columnGap) / 2;
-  const cellHeight = (contentHeight - rowGap) / 2;
+  const pageMargin = mmToPt(RECEIPT_MARGIN_MM);
+  const cardX = pageMargin;
+  const cardY = pageMargin;
+  const cardWidth = mmToPt(RECEIPT_PAGE_WIDTH_MM - RECEIPT_MARGIN_MM * 2);
+  const cardHeight = mmToPt(RECEIPT_PAGE_HEIGHT_MM - RECEIPT_MARGIN_MM * 2);
+  const innerPadding = mmToPt(RECEIPT_INNER_PADDING_MM);
+  const innerX = cardX + innerPadding;
+  const innerY = cardY + innerPadding;
+  const innerWidth = cardWidth - innerPadding * 2;
+  const footerHeight = mmToPt(RECEIPT_FOOTER_HEIGHT_MM);
+  const footerY = cardY + cardHeight - footerHeight;
 
   doc.save();
-  doc.rect(contentX, contentY, cellWidth, cellHeight).clip();
+  doc.roundedRect(cardX, cardY, cardWidth, cardHeight, mmToPt(3.2))
+    .fillAndStroke('#FFFFFF', RECEIPT_COLORS.border);
+  doc.roundedRect(cardX, cardY, cardWidth, cardHeight, mmToPt(3.2)).clip();
 
-  drawReceiptCopy({
+  const headerState = drawReceiptHeader({ doc, innerX, innerY, innerWidth, payment, invoice });
+  const tableStart = headerState.infoBottom + mmToPt(2.2);
+  const tableState = drawReceiptTable({
+    doc,
+    innerX,
+    innerWidth,
+    topY: tableStart,
+    groupedRows
+  });
+  const summaryTop = Math.max(tableState.tableBottom + mmToPt(1.0), footerY - mmToPt(25.5));
+  drawReceiptGrandTotal({
+    doc,
+    innerX,
+    innerWidth,
+    topY: summaryTop,
+    amount: totals.totalAmount
+  });
+  drawReceiptFooter({
+    doc,
+    x: cardX,
+    y: footerY,
+    width: cardWidth,
+    height: footerHeight
+  });
+
+  doc.restore();
+};
+
+const drawReceiptPageShell = ({
+  doc,
+  payment,
+  invoice,
+  groupedRows,
+  totals
+}) => {
+  drawReceiptPage({
     doc,
     payment,
     invoice,
     groupedRows,
-    totals,
-    x: contentX,
-    y: contentY,
-    width: cellWidth,
-    height: cellHeight
+    totals
   });
-
-  doc.restore();
 };
 
 const getInvoicePaymentData = async (id) => {
@@ -904,15 +1182,17 @@ export const generateInvoicePDF = async (req, res) => {
     const { fullRemainingBalance } = summary;
 
     const doc = new PDFDocument({
-      size: 'A4',
+      size: [mmToPt(RECEIPT_PAGE_WIDTH_MM), mmToPt(RECEIPT_PAGE_HEIGHT_MM)],
       margins: 0
     });
 
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename=invoice_${invoice.invoiceNumber}.pdf`);
+    const safeInvoiceNumber = String(invoice.invoiceNumber || payment._id || 'invoice').replace(/[^a-zA-Z0-9._-]/g, '_');
+    const safePaymentId = String(payment._id || Date.now()).replace(/[^a-zA-Z0-9._-]/g, '_');
+    res.setHeader('Content-Disposition', `attachment; filename=invoice_${safeInvoiceNumber}_${safePaymentId}.pdf`);
 
     doc.pipe(res);
-    drawReceiptSheet({
+    drawReceiptPageShell({
       doc,
       payment,
       invoice,
@@ -922,7 +1202,7 @@ export const generateInvoicePDF = async (req, res) => {
 
     if (payment.feeAllocations && payment.feeAllocations.length > 0) {
       doc.info.Title = `Invoice ${invoice.invoiceNumber}`;
-      doc.info.Subject = `Receipt balance ${formatReceiptCurrency(fullRemainingBalance)}`;
+      doc.info.Subject = `Receipt balance ${formatReceiptAmount(fullRemainingBalance)}`;
     }
 
     doc.end();
