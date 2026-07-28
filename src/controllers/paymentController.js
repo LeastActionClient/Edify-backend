@@ -239,14 +239,13 @@ const getReceiptLogoSource = () => {
   return fs.existsSync(logoPath) ? logoPath : Buffer.from(logoBase64, 'base64');
 };
 
-const drawReceiptField = (doc, { label, value, x, y, width, align = 'left', accent = false }) => {
+const drawReceiptField = (doc, { label, value, x, y, width, align = 'left', accent = false, valueFontSize = 7.2 }) => {
   const labelText = `${label}`;
   const valueText = value || '-';
   const valueColor = accent ? RECEIPT_COLORS.orange : RECEIPT_COLORS.text;
   const labelFontSize = 6.8;
-  const valueFontSize = 7.2;
   const gap = mmToPt(0.8);
-  const labelWidth = mmToPt(15.2);
+  const labelWidth = mmToPt(13.8);
   const colonWidth = doc.widthOfString(':');
   const valueWidth = Math.max(0, width - labelWidth - colonWidth - gap);
 
@@ -327,7 +326,7 @@ const drawReceiptHeader = ({ doc, innerX, innerY, innerWidth, payment, invoice }
 
   const infoTop = dividerY + mmToPt(2.0);
   const colGap = mmToPt(4.0);
-  const leftColWidth = mmToPt(39.0);
+  const leftColWidth = mmToPt(44.0);
   const rightColWidth = innerWidth - leftColWidth - colGap;
   const lineGap = mmToPt(5.0);
   const itemHeight = mmToPt(4.2);
@@ -402,7 +401,8 @@ const drawReceiptHeader = ({ doc, innerX, innerY, innerWidth, payment, invoice }
       x: innerX,
       y: infoTop + lineGap - mmToPt(0.3) ,
       width: leftColWidth,
-      accent: true
+      accent: true,
+      valueFontSize: 6.5
     });
     drawReceiptField(doc, {
       label: 'Date',
@@ -442,14 +442,19 @@ const drawReceiptHeader = ({ doc, innerX, innerY, innerWidth, payment, invoice }
 
 const drawReceiptTable = ({ doc, innerX, innerWidth, topY, groupedRows }) => {
   const hasDiscountColumn = false;
+  const showLessAmount = groupedRows.some((row) => toNumber(row.discountAmount || row.lessAmount) > 0);
   const rowHeight = groupedRows.length > 4 ? mmToPt(4.7) : mmToPt(5.1);
   const headerHeight = mmToPt(5.6);
   const tableHeight = headerHeight + Math.max(groupedRows.length, 1) * rowHeight;
   const tableRadius = mmToPt(3.5);
-  const descWidth = mmToPt(45);
-  const totalWidth = mmToPt(14);
-  const paidWidth = mmToPt(14);
-  const balanceWidth = innerWidth - descWidth - totalWidth - paidWidth;
+  const descWidth = showLessAmount ? mmToPt(26) : mmToPt(38);
+  const totalWidth = showLessAmount ? mmToPt(12) : mmToPt(13);
+  const lessWidth = showLessAmount ? mmToPt(12) : 0;
+  const paidWidth = showLessAmount ? mmToPt(12) : mmToPt(13);
+  const balanceWidth = showLessAmount ? mmToPt(15) : innerWidth - descWidth - totalWidth - paidWidth;
+  const textPadX = mmToPt(0.6);
+  const amountFontSize = showLessAmount ? 6.6 : 7.2;
+  const headerFontSize = showLessAmount ? 6.6 : 7.5;
 
   doc.save();
   doc.roundedRect(innerX, topY, innerWidth, tableHeight, tableRadius)
@@ -459,25 +464,33 @@ const drawReceiptTable = ({ doc, innerX, innerWidth, topY, groupedRows }) => {
   doc.rect(innerX, topY, innerWidth, headerHeight)
     .fillAndStroke(RECEIPT_COLORS.orange, RECEIPT_COLORS.orange);
 
-  doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(7.5)
+  doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(headerFontSize)
     .text('Fee Description', innerX + mmToPt(1.8), topY + mmToPt(1.9), {
       width: descWidth - mmToPt(3),
       ellipsis: true,
       lineBreak: false
     });
-  doc.text('Total', innerX + descWidth, topY + mmToPt(1.9), {
+  doc.text('Total', innerX + descWidth + textPadX, topY + mmToPt(1.9), {
     width: totalWidth,
     align: 'right',
     ellipsis: true,
     lineBreak: false
   });
-  doc.text('Paid', innerX + descWidth + totalWidth, topY + mmToPt(1.9), {
+  if (showLessAmount) {
+    doc.text('Less', innerX + descWidth + totalWidth + textPadX, topY + mmToPt(1.9), {
+      width: lessWidth,
+      align: 'right',
+      ellipsis: true,
+      lineBreak: false
+    });
+  }
+  doc.text('Paid', innerX + descWidth + totalWidth + lessWidth + textPadX, topY + mmToPt(1.9), {
     width: paidWidth,
     align: 'right',
     ellipsis: true,
     lineBreak: false
   });
-  doc.text('Balance', innerX + descWidth + totalWidth + paidWidth, topY + mmToPt(1.9), {
+  doc.text('Balance', innerX + descWidth + totalWidth + lessWidth + paidWidth + textPadX, topY + mmToPt(1.9), {
     width: balanceWidth - mmToPt(1.2),
     align: 'right',
     ellipsis: true,
@@ -502,25 +515,33 @@ const drawReceiptTable = ({ doc, innerX, innerWidth, topY, groupedRows }) => {
         doc.moveTo(innerX, rowY).lineTo(innerX + innerWidth, rowY).lineWidth(0.4).strokeColor(RECEIPT_COLORS.border).stroke();
       }
 
-      doc.fillColor(RECEIPT_COLORS.text).font('Helvetica-Bold').fontSize(7.5)
+      doc.fillColor(RECEIPT_COLORS.text).font('Helvetica-Bold').fontSize(amountFontSize)
         .text(row.displayName, innerX + mmToPt(1.8), rowY + mmToPt(1.2), {
           width: descWidth - mmToPt(3),
           ellipsis: true,
           lineBreak: false
         });
-      doc.text(formatReceiptMoney(row.totalAmount), innerX + descWidth, rowY + mmToPt(1.2), {
-        width: totalWidth - mmToPt(0.8),
+      doc.text(formatReceiptMoney(row.totalAmount), innerX + descWidth + textPadX, rowY + mmToPt(1.2), {
+        width: totalWidth - textPadX,
         align: 'right',
         ellipsis: true,
         lineBreak: false
       });
-      doc.text(formatReceiptMoney(row.paidAmount), innerX + descWidth + totalWidth, rowY + mmToPt(1.2), {
-        width: paidWidth - mmToPt(0.8),
+      if (showLessAmount) {
+        doc.text(formatReceiptMoney(row.discountAmount || row.lessAmount || 0), innerX + descWidth + totalWidth + textPadX, rowY + mmToPt(1.2), {
+          width: lessWidth - textPadX,
+          align: 'right',
+          ellipsis: true,
+          lineBreak: false
+        });
+      }
+      doc.text(formatReceiptMoney(row.paidAmount), innerX + descWidth + totalWidth + lessWidth + textPadX, rowY + mmToPt(1.2), {
+        width: paidWidth - textPadX,
         align: 'right',
         ellipsis: true,
         lineBreak: false
       });
-      doc.text(formatReceiptMoney(row.balanceAmount), innerX + descWidth + totalWidth + paidWidth, rowY + mmToPt(1.2), {
+      doc.text(formatReceiptMoney(row.balanceAmount), innerX + descWidth + totalWidth + lessWidth + paidWidth + textPadX, rowY + mmToPt(1.2), {
         width: balanceWidth - mmToPt(1.2),
         align: 'right',
         ellipsis: true,
