@@ -243,7 +243,7 @@ const drawReceiptField = (doc, { label, value, x, y, width, align = 'left', acce
   const labelText = `${label}`;
   const valueText = value || '-';
   const valueColor = accent ? RECEIPT_COLORS.orange : RECEIPT_COLORS.text;
-  const labelFontSize = 6.2;
+  const labelFontSize = 6.8;
   const valueFontSize = 7.2;
   const gap = mmToPt(0.8);
   const labelWidth = mmToPt(15.2);
@@ -400,7 +400,7 @@ const drawReceiptHeader = ({ doc, innerX, innerY, innerWidth, payment, invoice }
       label: 'S. Name',
       value: student.studentName || '-',
       x: innerX,
-      y: infoTop + lineGap,
+      y: infoTop + lineGap - mmToPt(0.3) ,
       width: leftColWidth,
       accent: true
     });
