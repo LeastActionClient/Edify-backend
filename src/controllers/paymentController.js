@@ -963,6 +963,56 @@ export const createPayment = async (req, res) => {
       fee.lessAmount = concession ? (concession.lessAmount || 0) : 0;
     });
 
+    // Enforce Sequential Payment Rule per fee category sequence
+    const parseTermInfo = (categoryName) => {
+      const name = String(categoryName || '').trim();
+      const match = name.match(/term\s*(\d+)/i) || name.match(/\bt(\d+)\b/i) || name.match(/(\d+)(?:st|nd|rd|th)?\s*term/i);
+      if (!match) {
+        return { isTerm: false, baseCategory: name, termNumber: 0 };
+      }
+      const termNumber = parseInt(match[1], 10);
+      let baseCategory = name.replace(match[0], '').replace(/[-_()\s]+/g, ' ').trim();
+      if (!baseCategory) {
+        baseCategory = 'General Term';
+      }
+      return { isTerm: true, baseCategory: baseCategory.toLowerCase(), termNumber };
+    };
+
+    const allStudentFees = await StudentFee.find({ studentId }).populate('feeCategoryId').session(session);
+
+    for (const fee of unpaidFees) {
+      const catName = fee.feeCategoryId?.name || '';
+      const termInfo = parseTermInfo(catName);
+
+      if (termInfo.isTerm) {
+        const previousTermFees = allStudentFees.filter(otherFee => {
+          if (otherFee._id.toString() === fee._id.toString()) return false;
+          const otherCatName = otherFee.feeCategoryId?.name || '';
+          const otherTermInfo = parseTermInfo(otherCatName);
+          return otherTermInfo.isTerm &&
+                 otherTermInfo.baseCategory === termInfo.baseCategory &&
+                 otherTermInfo.termNumber < termInfo.termNumber;
+        });
+
+        for (const prevFee of previousTermFees) {
+          const prevFeeId = prevFee._id.toString();
+          const prevRemaining = prevFee.remainingAmount;
+          
+          const alloc = targetAllocations.find(a => a.studentFeeId === prevFeeId);
+          const allocAmt = alloc ? (parseFloat(alloc.amount) || 0) : 0;
+          const remainingAfter = Math.max(0, prevRemaining - allocAmt);
+
+          if (remainingAfter > 0) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(400).json({
+              error: 'Please complete payment for the previous term before paying this term.'
+            });
+          }
+        }
+      }
+    }
+
     let finalAmount = amount;
     const isClientAllocation = clientAllocations && Array.isArray(clientAllocations) && clientAllocations.length > 0;
 

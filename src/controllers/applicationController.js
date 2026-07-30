@@ -42,8 +42,25 @@ export const getNextNumbers = async (req, res) => {
 export const createApplication = async (req, res) => {
   const {
     studentName, parentName, fatherName, motherName, fatherPhone, motherPhone,
-    address, applyingClass, previousSchool, siblings, feePaid
+    guardianName, guardianPhone, address, applyingClass, previousSchool, siblings, feePaid
   } = req.body;
+
+  const fName = (fatherName || '').trim();
+  const mName = (motherName || '').trim();
+  const fPhone = (fatherPhone || '').trim();
+  const mPhone = (motherPhone || '').trim();
+  const gName = (guardianName || '').trim();
+  const gPhone = (guardianPhone || '').trim();
+
+  if (fPhone && !/^[6-9]\d{9}$/.test(fPhone)) {
+    return res.status(400).json({ error: 'Father Phone Number must be 10 digits starting with 6, 7, 8, or 9.' });
+  }
+  if (mPhone && !/^[6-9]\d{9}$/.test(mPhone)) {
+    return res.status(400).json({ error: 'Mother Phone Number must be 10 digits starting with 6, 7, 8, or 9.' });
+  }
+  if (gPhone && !/^[6-9]\d{9}$/.test(gPhone)) {
+    return res.status(400).json({ error: 'Guardian Phone Number must be 10 digits starting with 6, 7, 8, or 9.' });
+  }
 
   const isFeePaid = feePaid === true || feePaid === 'true';
   const feeAmount = isFeePaid ? await getApplicationFeeAmount() : 0;
@@ -59,11 +76,13 @@ export const createApplication = async (req, res) => {
       const [application] = await Application.create([{
         applicationId,
         studentName,
-        parentName,
-        fatherName,
-        motherName,
-        fatherPhone,
-        motherPhone,
+        parentName: parentName || fName || mName || gName || '',
+        fatherName: fName,
+        motherName: mName,
+        fatherPhone: fPhone,
+        motherPhone: mPhone,
+        guardianName: gName,
+        guardianPhone: gPhone,
         address,
         applyingClass,
         previousSchool,
@@ -157,7 +176,7 @@ export const toggleFeeStatus = async (req, res) => {
 export const getApplications = async (req, res) => {
   try {
     const applications = await Application.find()
-      .select('applicationId adminNo studentName parentName fatherName motherName fatherPhone motherPhone address applyingClass previousSchool applicationDate status feePaid feeAmount feePaidDate processedById student approvedBy approvedAt createdAt updatedAt')
+      .select('applicationId adminNo studentName parentName fatherName motherName fatherPhone motherPhone guardianName guardianPhone address applyingClass previousSchool applicationDate status feePaid feeAmount feePaidDate processedById student approvedBy approvedAt createdAt updatedAt')
       .populate('processedById', 'username')
       .sort({ applicationDate: -1 })
       .lean();
@@ -171,7 +190,7 @@ export const getApplicationById = async (req, res) => {
   try {
     const { id } = req.params;
     const application = await Application.findById(id)
-      .select('applicationId adminNo studentName parentName fatherName motherName fatherPhone motherPhone address applyingClass previousSchool applicationDate status feePaid feeAmount feePaidDate siblings processedById student approvedBy approvedAt createdAt updatedAt')
+      .select('applicationId adminNo studentName parentName fatherName motherName fatherPhone motherPhone guardianName guardianPhone address applyingClass previousSchool applicationDate status feePaid feeAmount feePaidDate siblings processedById student approvedBy approvedAt createdAt updatedAt')
       .populate('processedById', 'username')
       .lean();
     if (!application) {
@@ -251,12 +270,12 @@ export const approveApplication = async (req, res) => {
       admissionNumber: admissionNumber.trim(),
       applicationId: application._id,
       studentName: application.studentName,
-      guardian: application.parentName,
-      guardianName: application.parentName,
-      fatherName: application.fatherName,
-      motherName: application.motherName,
-      fatherPhone: application.fatherPhone,
-      motherPhone: application.motherPhone,
+      guardian: application.guardianName || '',
+      guardianName: application.guardianName || '',
+      fatherName: application.fatherName || '',
+      motherName: application.motherName || '',
+      fatherPhone: application.fatherPhone || '',
+      motherPhone: application.motherPhone || '',
       address: application.address,
       currentClass: application.applyingClass,
       section,
