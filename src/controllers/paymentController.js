@@ -738,7 +738,7 @@ const drawReceiptPage = ({
     innerX,
     innerWidth,
     topY: summaryTop,
-    amount: totals.totalAmount
+    amount: totals.paidAmount
   });
   drawReceiptFooter({
     doc,
