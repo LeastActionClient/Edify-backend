@@ -95,7 +95,7 @@ const buildReceiptEntry = (source, fallbackAmount = 0) => {
   const totalAmount = toNumber(fee.totalAmount);
   const paidAmount = toNumber(source?.amount ?? fallbackAmount);
   const balanceAmount = toNumber(fee.remainingAmount);
-  const discountAmount = toNumber(
+  const lessAmount = toNumber(
     source?.discountAmount ??
       source?.lessAmount ??
       source?.concessionAmount ??
@@ -110,7 +110,8 @@ const buildReceiptEntry = (source, fallbackAmount = 0) => {
     totalAmount,
     paidAmount,
     balanceAmount: Number.isFinite(balanceAmount) && balanceAmount >= 0 ? balanceAmount : 0,
-    discountAmount
+    lessAmount,
+    discountAmount: lessAmount
   };
 };
 
@@ -121,6 +122,7 @@ const groupFeeAllocationsForReceipt = (payment) => {
       displayName: 'Application Fee',
       terms: [],
       totalAmount: payment.amount,
+      lessAmount: 0,
       discountAmount: 0,
       paidAmount: payment.amount,
       balanceAmount: 0,
@@ -151,6 +153,7 @@ const groupFeeAllocationsForReceipt = (payment) => {
         terms: [],
         rows: [],
         totalAmount: 0,
+        lessAmount: 0,
         discountAmount: 0,
         paidAmount: 0,
         balanceAmount: 0,
@@ -163,6 +166,7 @@ const groupFeeAllocationsForReceipt = (payment) => {
     const group = groupedMap.get(groupKey);
     group.rows.push(entry);
     group.totalAmount += entry.totalAmount;
+    group.lessAmount += entry.lessAmount;
     group.discountAmount += entry.discountAmount;
     group.paidAmount += entry.paidAmount;
     group.balanceAmount += entry.balanceAmount;
@@ -183,6 +187,7 @@ const groupFeeAllocationsForReceipt = (payment) => {
         : group.rows[0]?.displayName || group.displayName,
       terms: sortedTerms,
       totalAmount: group.totalAmount,
+      lessAmount: group.lessAmount,
       discountAmount: group.discountAmount,
       paidAmount: group.paidAmount,
       balanceAmount: group.balanceAmount,
@@ -196,12 +201,14 @@ const calculateReceiptTotals = (groupedRows) =>
   groupedRows.reduce(
     (acc, row) => ({
       totalAmount: acc.totalAmount + toNumber(row.totalAmount),
+      lessAmount: acc.lessAmount + toNumber(row.lessAmount ?? row.discountAmount),
       discountAmount: acc.discountAmount + toNumber(row.discountAmount),
       paidAmount: acc.paidAmount + toNumber(row.paidAmount),
       balanceAmount: acc.balanceAmount + toNumber(row.balanceAmount)
     }),
     {
       totalAmount: 0,
+      lessAmount: 0,
       discountAmount: 0,
       paidAmount: 0,
       balanceAmount: 0
@@ -223,6 +230,9 @@ const RECEIPT_PAGE_HEIGHT_MM = 148;
 const RECEIPT_MARGIN_MM = 5;
 const RECEIPT_INNER_PADDING_MM = 4;
 const RECEIPT_FOOTER_HEIGHT_MM = 5.5;
+const RECEIPT_MAX_ROWS_PER_PAGE = 12;
+const RECEIPT_PAGE_GAP_MM = 1.8;
+const RECEIPT_SUMMARY_GAP_MM = 1.4;
 
 const RECEIPT_COLORS = {
   orange: '#F58220',
@@ -440,24 +450,24 @@ const drawReceiptHeader = ({ doc, innerX, innerY, innerWidth, payment, invoice }
   };
 };
 
-const drawReceiptTable = ({ doc, innerX, innerWidth, topY, groupedRows }) => {
-  const hasDiscountColumn = false;
-  const showLessAmount = groupedRows.some((row) => toNumber(row.discountAmount || row.lessAmount) > 0);
+const drawReceiptTable = ({ doc, innerX, innerWidth, topY, groupedRows, showLessAmount = false }) => {
+  const getRowLessAmount = (row) => toNumber(row?.lessAmount ?? row?.discountAmount ?? 0);
   const rowHeight = groupedRows.length > 4 ? mmToPt(5.0) : mmToPt(5.35);
   const headerHeight = mmToPt(6.0);
   const tableHeight = headerHeight + Math.max(groupedRows.length, 1) * rowHeight;
   const tableRadius = mmToPt(3.5);
-  const totalWidth = showLessAmount ? mmToPt(12) : mmToPt(13);
-  const lessWidth = showLessAmount ? mmToPt(12) : 0;
-  const paidWidth = showLessAmount ? mmToPt(12) : mmToPt(13);
-  const balanceWidth = mmToPt(11.5);
+  const totalWidth = showLessAmount ? mmToPt(10.5) : mmToPt(11.5);
+  const lessWidth = showLessAmount ? Math.max(totalWidth, mmToPt(12.5)) : 0;
+  const paidWidth = showLessAmount ? mmToPt(10.5) : mmToPt(11.5);
+  const balanceWidth = mmToPt(10.5);
   const descWidth = innerWidth - totalWidth - lessWidth - paidWidth - balanceWidth;
-  const textPadX = mmToPt(0.6);
+  const textPadX = mmToPt(0.5);
   const totalX = innerX + descWidth;
   const lessX = totalX + totalWidth;
   const paidX = lessX + lessWidth;
   const balanceX = paidX + paidWidth;
   const amountFontSize = showLessAmount ? 7.0 : 7.4;
+  const lessAmountFontSize = showLessAmount ? 6.4 : amountFontSize;
   const headerFontSize = showLessAmount ? 7.0 : 7.6;
 
   doc.save();
@@ -532,12 +542,14 @@ const drawReceiptTable = ({ doc, innerX, innerWidth, topY, groupedRows }) => {
         lineBreak: false
       });
       if (showLessAmount) {
-        doc.text(formatReceiptMoney(row.discountAmount || row.lessAmount || 0), lessX + textPadX, rowY + mmToPt(1.35), {
+        doc.font('Helvetica-Bold').fontSize(lessAmountFontSize)
+          .text(formatReceiptMoney(getRowLessAmount(row)), lessX + textPadX, rowY + mmToPt(1.42), {
           width: lessWidth - textPadX * 2,
           align: 'right',
           ellipsis: true,
           lineBreak: false
         });
+        doc.font('Helvetica-Bold').fontSize(amountFontSize);
       }
       doc.text(formatReceiptMoney(row.paidAmount), paidX + textPadX, rowY + mmToPt(1.35), {
         width: paidWidth - textPadX * 2,
@@ -582,7 +594,7 @@ const drawReceiptTable = ({ doc, innerX, innerWidth, topY, groupedRows }) => {
 
 const drawReceiptGrandTotal = ({ doc, innerX, innerWidth, topY, amount }) => {
   const summaryWidth = mmToPt(44);
-  const summaryHeight = mmToPt(7.5);
+  const summaryHeight = mmToPt(5.5);
   const summaryX = innerX + innerWidth - summaryWidth;
   const dividerY = topY + mmToPt(3.3);
 
@@ -764,6 +776,534 @@ const drawReceiptPageShell = ({
     invoice,
     groupedRows,
     totals
+  });
+};
+
+const buildReceiptSummaryRows = ({ totals, payment }) => {
+  const paidAmount = toNumber(totals?.paidAmount || payment?.amount);
+
+  return [
+    { label: 'Paid Amount', value: formatReceiptMoney(paidAmount), accent: false }
+  ];
+};
+
+const getReceiptInfoGroups = (payment, invoice) => {
+  const student = payment.studentId || payment.student || {};
+  const application = payment.applicationId || payment.application || {};
+  const isApplication = payment.paymentType === 'APPLICATION';
+  const receiptDateValue = payment.paymentDate || invoice?.generatedDate || payment.createdAt;
+  const paymentModeValue = String(payment.paymentMethod || payment.paymentMode || payment.mode || '-').toUpperCase();
+  const receiptNumberValue = payment.invoice?.invoiceNumber || payment._id?.toString?.() || '-';
+  const classValue = isApplication
+    ? application.applyingClass || '-'
+    : student.currentClass
+      ? `${student.currentClass}${student.section ? ` - ${student.section}` : ''}`
+      : '-';
+
+  return isApplication
+    ? [
+        [
+          { label: 'Application No', value: application.applicationId || '-', accent: true },
+          { label: 'Receipt No', value: receiptNumberValue, align: 'right' }
+        ],
+        [
+          { label: 'Applicant Name', value: application.studentName || '-', valueColor: RECEIPT_COLORS.text, valueFontSize: 7.4 },
+          { label: 'Applying Class', value: application.applyingClass || '-', align: 'right' }
+        ],
+        [
+          { label: 'Date', value: formatReceiptDate(receiptDateValue) },
+          { label: 'Payment Mode', value: paymentModeValue, align: 'right' }
+        ]
+      ]
+    : [
+        [
+          { label: 'Ad. No', value: student.admissionNumber || '-' },
+          { label: 'Receipt No', value: receiptNumberValue, align: 'right' }
+        ],
+        [
+          { label: 'S. Name', value: student.studentName || '-', valueColor: RECEIPT_COLORS.text, valueFontSize: 7.4 },
+          { label: 'Date', value: formatReceiptDate(receiptDateValue), align: 'right' }
+        ],
+        [
+          { label: 'Class & Sec', value: classValue },
+          { label: 'Payment Mode', value: paymentModeValue, align: 'right' }
+        ]
+      ];
+};
+
+const measureReceiptFieldBlock = (doc, field, width) => {
+  const labelFontSize = 7.0;
+  const valueFontSize = field.valueFontSize || (field.compact ? 6.9 : 7.35);
+  const labelWidth = mmToPt(18.5);
+  const gap = mmToPt(0.8);
+  const colonWidth = doc.widthOfString(':');
+  const valueWidth = Math.max(0, width - labelWidth - colonWidth - gap);
+  const valueText = String(field.value || '-');
+
+  doc.font('Helvetica-Bold').fontSize(labelFontSize);
+  const labelHeight = doc.currentLineHeight(false);
+  doc.font('Helvetica-Bold').fontSize(valueFontSize);
+  const valueHeight = doc.heightOfString(valueText, {
+    width: valueWidth,
+    align: field.align === 'right' ? 'right' : 'left'
+  });
+
+  return {
+    labelWidth,
+    valueWidth,
+    colonWidth,
+    gap,
+    labelHeight,
+    valueHeight,
+    height: Math.max(labelHeight, valueHeight)
+  };
+};
+
+const drawReceiptFieldBlock = (doc, field, x, y, width) => {
+  const metrics = measureReceiptFieldBlock(doc, field, width);
+  const labelText = field.label;
+  const valueText = String(field.value || '-');
+  const valueColor = field.valueColor || (field.accent ? RECEIPT_COLORS.orange : RECEIPT_COLORS.text);
+
+  doc.fillColor(RECEIPT_COLORS.darkGrey)
+    .font('Helvetica-Bold')
+    .fontSize(7.0)
+    .text(labelText, x, y, {
+      width: metrics.labelWidth,
+      lineBreak: false,
+      ellipsis: true
+    });
+
+  doc.text(':', x + metrics.labelWidth + mmToPt(0.2), y, {
+    width: metrics.colonWidth + mmToPt(0.2),
+    lineBreak: false
+  });
+
+  doc.fillColor(valueColor)
+    .font('Helvetica-Bold')
+    .fontSize(field.valueFontSize || (field.compact ? 6.9 : 7.35))
+    .text(valueText, x + metrics.labelWidth + metrics.colonWidth + metrics.gap, y, {
+      width: metrics.valueWidth,
+      align: field.align === 'right' ? 'right' : 'left',
+      lineBreak: true
+    });
+
+  return metrics.height;
+};
+
+const measureReceiptHeaderHeight = (doc, { payment, invoice, innerWidth }) => {
+  const groups = getReceiptInfoGroups(payment, invoice);
+  const leftColWidth = mmToPt(40.8);
+  const colGap = mmToPt(4.0);
+  const rightColWidth = innerWidth - leftColWidth - colGap;
+  const infoTop = mmToPt(18.6) + mmToPt(2.0);
+  const rowGap = mmToPt(1.2);
+
+  const rowHeights = groups.map((pair) => {
+    const leftMetrics = measureReceiptFieldBlock(doc, pair[0], leftColWidth);
+    const rightMetrics = measureReceiptFieldBlock(doc, pair[1], rightColWidth);
+    return Math.max(leftMetrics.height, rightMetrics.height);
+  });
+
+  return infoTop + rowHeights.reduce((sum, height, index) => sum + height + (index > 0 ? rowGap : 0), 0) + mmToPt(1.0);
+};
+
+const drawReceiptHeaderV2 = ({ doc, innerX, innerY, innerWidth, payment, invoice }) => {
+  const logoWidth = mmToPt(70);
+  const logoHeight = mmToPt(14);
+  const badgeWidth = mmToPt(20.5);
+  const badgeHeight = mmToPt(10.5);
+  const badgeX = innerX + innerWidth - badgeWidth;
+
+  try {
+    doc.image(getReceiptLogoSource(), innerX, innerY + mmToPt(0.8), {
+      width: logoWidth,
+      height: logoHeight,
+      fit: [logoWidth, logoHeight]
+    });
+  } catch (imageError) {
+    console.error('Error loading receipt logo', imageError);
+  }
+
+  doc.save();
+  doc.roundedRect(badgeX, innerY + mmToPt(1.0), badgeWidth, badgeHeight, mmToPt(4))
+    .fillAndStroke(RECEIPT_COLORS.lightOrange, RECEIPT_COLORS.lightOrange);
+  doc.fillColor('#111111').font('Helvetica-Bold').fontSize(8.8)
+    .text('FEE', badgeX, innerY + mmToPt(3.0), {
+      width: badgeWidth,
+      align: 'center',
+      lineBreak: false
+    });
+  doc.text('RECEIPT', badgeX, innerY + mmToPt(7.0), {
+    width: badgeWidth,
+    align: 'center',
+    lineBreak: false
+  });
+  doc.restore();
+
+  const approvedY = innerY + badgeHeight + mmToPt(4.0);
+  doc.fillColor(RECEIPT_COLORS.muted).font('Helvetica').fontSize(8.8)
+    .text('Approved by Govt. of Tamilnadu - 2349', innerX, approvedY, {
+      width: innerWidth,
+      align: 'center',
+      lineBreak: false,
+      ellipsis: true
+    });
+
+  const dividerY = innerY + mmToPt(18.6);
+  doc.moveTo(innerX, dividerY).lineTo(innerX + innerWidth, dividerY).lineWidth(0.5).strokeColor(RECEIPT_COLORS.border).stroke();
+
+  const infoTop = dividerY + mmToPt(2.0);
+  const colGap = mmToPt(4.0);
+  const leftColWidth = mmToPt(40.8);
+  const rightColWidth = innerWidth - leftColWidth - colGap;
+  const rowGap = mmToPt(1.2);
+  const groups = getReceiptInfoGroups(payment, invoice);
+  const rowHeights = [];
+
+  let currentY = infoTop;
+  groups.forEach((pair, index) => {
+    const leftHeight = drawReceiptFieldBlock(doc, pair[0], innerX, currentY, leftColWidth);
+    const rightHeight = drawReceiptFieldBlock(doc, pair[1], innerX + leftColWidth + colGap, currentY, rightColWidth);
+    const rowHeight = Math.max(leftHeight, rightHeight);
+    rowHeights.push(rowHeight);
+    currentY += rowHeight + (index < groups.length - 1 ? rowGap : 0);
+  });
+
+  const infoBottom = currentY + mmToPt(1.0);
+  doc.moveTo(innerX, infoBottom).lineTo(innerX + innerWidth, infoBottom).lineWidth(0.5).strokeColor(RECEIPT_COLORS.border).stroke();
+
+  return {
+    infoBottom,
+    headerBottom: infoBottom
+  };
+};
+
+const measureReceiptTableColumns = (doc, groupedRows, innerWidth, showLessAmount = false) => {
+  const paddingX = mmToPt(1.6);
+  const headerFontSize = 7.0;
+  const amountFontSize = 6.9;
+
+  doc.font('Helvetica-Bold').fontSize(headerFontSize);
+  const totalSamples = ['Total', ...groupedRows.map((row) => formatReceiptMoney(row.totalAmount))];
+  const lessSamples = ['Less', ...groupedRows.map((row) => formatReceiptMoney(row.lessAmount ?? row.discountAmount ?? 0))];
+  const paidSamples = ['Paid', ...groupedRows.map((row) => formatReceiptMoney(row.paidAmount))];
+  const balanceSamples = ['Balance', ...groupedRows.map((row) => formatReceiptMoney(row.balanceAmount))];
+
+  const totalWidth = Math.max(...totalSamples.map((value) => doc.widthOfString(String(value))), mmToPt(9.5)) + paddingX * 2;
+  const paidWidth = Math.max(...paidSamples.map((value) => doc.widthOfString(String(value))), mmToPt(9.5)) + paddingX * 2;
+  const balanceWidth = Math.max(...balanceSamples.map((value) => doc.widthOfString(String(value))), mmToPt(9.5)) + paddingX * 2;
+  const minDescriptionWidth = mmToPt(36);
+  const lessWidth = showLessAmount
+    ? Math.max(...lessSamples.map((value) => doc.widthOfString(String(value))), mmToPt(9.5)) + paddingX * 2
+    : 0;
+  const availableDescriptionWidth = innerWidth - totalWidth - lessWidth - paidWidth - balanceWidth;
+  const descriptionWidth = Math.max(availableDescriptionWidth, minDescriptionWidth);
+  const extraSpace = innerWidth - (descriptionWidth + totalWidth + lessWidth + paidWidth + balanceWidth);
+
+  return {
+    descriptionWidth: descriptionWidth + extraSpace,
+    totalWidth,
+    lessWidth,
+    paidWidth,
+    balanceWidth,
+    paddingX,
+    headerFontSize,
+    amountFontSize
+  };
+};
+
+const measureReceiptRowHeight = (doc, row, columns) => {
+  const descPaddingY = mmToPt(0.95);
+  const descPaddingX = mmToPt(1.2);
+  const descriptionWidth = Math.max(0, columns.descriptionWidth - descPaddingX * 2);
+  doc.font('Helvetica-Bold').fontSize(columns.amountFontSize);
+  const amountLineHeight = doc.heightOfString('0.00', {
+    width: columns.totalWidth - columns.paddingX * 2,
+    align: 'right'
+  });
+  const descHeight = doc.heightOfString(String(row.displayName || '-'), {
+    width: descriptionWidth,
+    align: 'left'
+  });
+  return Math.max(mmToPt(5.1), descHeight + descPaddingY * 3, amountLineHeight + descPaddingY * 2);
+};
+
+const paginateReceiptRows = (doc, groupedRows, columns, availableHeight) => {
+  const pages = [];
+  let currentPage = [];
+  let currentHeight = 0;
+
+  groupedRows.forEach((row) => {
+    const rowHeight = measureReceiptRowHeight(doc, row, columns);
+    const exceedsCount = currentPage.length >= RECEIPT_MAX_ROWS_PER_PAGE;
+    const exceedsHeight = currentPage.length > 0 && currentHeight + rowHeight > availableHeight;
+
+    if (currentPage.length > 0 && (exceedsCount || exceedsHeight)) {
+      pages.push(currentPage);
+      currentPage = [];
+      currentHeight = 0;
+    }
+
+    currentPage.push({ ...row, _rowHeight: rowHeight });
+    currentHeight += rowHeight;
+  });
+
+  if (currentPage.length > 0 || pages.length === 0) {
+    pages.push(currentPage);
+  }
+
+  return pages;
+};
+
+const measureReceiptSummaryHeight = () => mmToPt(11.0);
+
+const drawReceiptTablePage = ({ doc, innerX, innerWidth, topY, rows, columns, showLessAmount = false }) => {
+  const headerHeight = mmToPt(6.2);
+  const rowHeights = rows.length > 0
+    ? rows.map((row) => row._rowHeight || measureReceiptRowHeight(doc, row, columns))
+    : [mmToPt(6.0)];
+  const tableHeight = headerHeight + rowHeights.reduce((sum, height) => sum + height, 0);
+  const tableRadius = mmToPt(3.5);
+  const descX = innerX;
+  const totalX = descX + columns.descriptionWidth;
+  const lessX = totalX + columns.totalWidth;
+  const paidX = showLessAmount ? lessX + columns.lessWidth : totalX + columns.totalWidth;
+  const balanceX = paidX + columns.paidWidth;
+
+  doc.save();
+  doc.roundedRect(innerX, topY, innerWidth, tableHeight, tableRadius)
+    .fillAndStroke('#FFFFFF', RECEIPT_COLORS.border);
+  doc.roundedRect(innerX, topY, innerWidth, tableHeight, tableRadius).clip();
+
+  doc.rect(innerX, topY, innerWidth, headerHeight)
+    .fillAndStroke(RECEIPT_COLORS.orange, RECEIPT_COLORS.orange);
+
+  doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(columns.headerFontSize)
+    .text('Fee Description', innerX + columns.paddingX, topY + mmToPt(2.0), {
+      width: columns.descriptionWidth - columns.paddingX * 2,
+      lineBreak: false,
+      ellipsis: true
+    });
+  doc.text('Total', totalX, topY + mmToPt(2.0), {
+    width: columns.totalWidth,
+    align: 'center',
+    lineBreak: false,
+    ellipsis: true
+  });
+  if (showLessAmount) {
+    doc.text('Less', lessX, topY + mmToPt(2.0), {
+      width: columns.lessWidth,
+      align: 'center',
+      lineBreak: false,
+      ellipsis: true
+    });
+  }
+  doc.text('Paid', paidX, topY + mmToPt(2.0), {
+    width: columns.paidWidth,
+    align: 'center',
+    lineBreak: false,
+    ellipsis: true
+  });
+  doc.text('Balance', balanceX, topY + mmToPt(2.0), {
+    width: columns.balanceWidth,
+    align: 'center',
+    lineBreak: false,
+    ellipsis: true
+  });
+
+  let rowTop = topY + headerHeight;
+
+  if (rows.length === 0) {
+    doc.fillColor(RECEIPT_COLORS.darkGrey).font('Helvetica').fontSize(7.3)
+      .text('No fee details available.', innerX, rowTop + mmToPt(2.0), {
+        width: innerWidth,
+        align: 'center'
+      });
+  } else {
+    rows.forEach((row, index) => {
+      const rowHeight = row._rowHeight || mmToPt(5.1);
+      const rowY = rowTop;
+      const fillColor = index % 2 === 0 ? '#FFFFFF' : RECEIPT_COLORS.alternateRow;
+
+      doc.rect(innerX, rowY, innerWidth, rowHeight).fill(fillColor);
+      if (index > 0) {
+        doc.moveTo(innerX, rowY).lineTo(innerX + innerWidth, rowY).lineWidth(0.4).strokeColor(RECEIPT_COLORS.border).stroke();
+      }
+
+      doc.fillColor(RECEIPT_COLORS.text).font('Helvetica-Bold').fontSize(columns.amountFontSize)
+        .text(row.displayName, innerX + columns.paddingX, rowY + mmToPt(1.1), {
+          width: columns.descriptionWidth - columns.paddingX * 2,
+          align: 'left',
+          lineBreak: true
+        });
+      doc.text(formatReceiptMoney(row.totalAmount), totalX + columns.paddingX, rowY + mmToPt(1.1), {
+        width: columns.totalWidth - columns.paddingX * 2,
+        align: 'right',
+        lineBreak: false
+      });
+      if (showLessAmount) {
+        doc.text(formatReceiptMoney(row.lessAmount ?? row.discountAmount ?? 0), lessX + columns.paddingX, rowY + mmToPt(1.1), {
+          width: columns.lessWidth - columns.paddingX * 2,
+          align: 'right',
+          lineBreak: false
+        });
+      }
+      doc.text(formatReceiptMoney(row.paidAmount), paidX + columns.paddingX, rowY + mmToPt(1.1), {
+        width: columns.paidWidth - columns.paddingX * 2,
+        align: 'right',
+        lineBreak: false
+      });
+      doc.text(formatReceiptMoney(row.balanceAmount), balanceX + columns.paddingX, rowY + mmToPt(1.1), {
+        width: columns.balanceWidth - columns.paddingX * 2,
+        align: 'right',
+        lineBreak: false
+      });
+
+      rowTop += rowHeight;
+    });
+  }
+
+  const tableBottom = topY + tableHeight;
+  [totalX, ...(showLessAmount ? [lessX] : []), paidX, balanceX].forEach((x) => {
+    doc.moveTo(x, topY).lineTo(x, tableBottom).lineWidth(0.45).strokeColor(RECEIPT_COLORS.border).stroke();
+  });
+
+  doc.restore();
+
+  return {
+    tableBottom
+  };
+};
+
+const drawReceiptSummaryPage = ({ doc, innerX, innerWidth, topY, totals, payment }) => {
+  const summaryRows = buildReceiptSummaryRows({ totals, payment });
+  const summaryWidth = innerWidth;
+  const summaryX = innerX;
+  const paddingX = mmToPt(2.8);
+  const paddingY = mmToPt(2.0);
+  const titleGap = mmToPt(1.2);
+  const rowGap = mmToPt(0.8);
+  const rowHeight = mmToPt(3.4);
+  const boxHeight = paddingY * 2 + titleGap + summaryRows.length * rowHeight + Math.max(0, summaryRows.length - 1) * rowGap;
+  const titleY = topY - mmToPt(2.3);
+
+  doc.save();
+  doc.roundedRect(summaryX, topY, summaryWidth, boxHeight, mmToPt(2.8))
+    .fillAndStroke(RECEIPT_COLORS.lightOrange, RECEIPT_COLORS.lightOrange);
+
+  doc.fillColor(RECEIPT_COLORS.orange).font('Helvetica-Bold').fontSize(8.7)
+    .text('SUMMARY', summaryX, titleY, {
+      width: summaryWidth,
+      align: 'center',
+      lineBreak: false
+    });
+
+  let rowY = topY + paddingY;
+  summaryRows.forEach((row) => {
+    doc.fillColor(RECEIPT_COLORS.darkGrey).font('Helvetica-Bold').fontSize(6.9)
+      .text(row.label.toUpperCase(), summaryX + paddingX, rowY + mmToPt(0.4), {
+        width: summaryWidth - paddingX * 2,
+        align: 'left',
+        lineBreak: false
+      });
+    doc.fillColor(row.accent ? RECEIPT_COLORS.orange : RECEIPT_COLORS.text)
+      .font('Helvetica-Bold')
+      .fontSize(8.4)
+      .text(`Rs. ${row.value}`, summaryX + paddingX, rowY, {
+        width: summaryWidth - paddingX * 2,
+        align: 'right',
+        lineBreak: false
+      });
+    rowY += rowHeight + rowGap;
+  });
+
+  doc.restore();
+  return {
+    summaryBottom: topY + boxHeight
+  };
+};
+
+const drawReceiptPdfDocument = ({
+  doc,
+  payment,
+  invoice,
+  groupedRows,
+  totals
+}) => {
+  const pageMargin = mmToPt(RECEIPT_MARGIN_MM);
+  const cardX = pageMargin;
+  const cardY = pageMargin;
+  const cardWidth = mmToPt(RECEIPT_PAGE_WIDTH_MM - RECEIPT_MARGIN_MM * 2);
+  const cardHeight = mmToPt(RECEIPT_PAGE_HEIGHT_MM - RECEIPT_MARGIN_MM * 2);
+  const innerPadding = mmToPt(RECEIPT_INNER_PADDING_MM);
+  const innerX = cardX + innerPadding;
+  const innerY = cardY + innerPadding;
+  const innerWidth = cardWidth - innerPadding * 2;
+  const footerHeight = mmToPt(RECEIPT_FOOTER_HEIGHT_MM);
+  const footerY = cardY + cardHeight - footerHeight;
+  const summaryHeight = measureReceiptSummaryHeight();
+
+  const showLessAmount = groupedRows.some((row) => toNumber(row?.lessAmount ?? row?.discountAmount) > 0);
+  const headerHeight = measureReceiptHeaderHeight(doc, { payment, invoice, innerWidth });
+  const columns = measureReceiptTableColumns(doc, groupedRows, innerWidth, showLessAmount);
+  const tableTop = innerY + headerHeight + mmToPt(RECEIPT_PAGE_GAP_MM);
+  const availableRowsHeight = Math.max(
+    mmToPt(18),
+    footerY - tableTop - summaryHeight - mmToPt(RECEIPT_SUMMARY_GAP_MM)
+  );
+  const pages = paginateReceiptRows(doc, groupedRows, columns, availableRowsHeight);
+  const totalPages = pages.length || 1;
+
+  pages.forEach((rows, pageIndex) => {
+    if (pageIndex > 0) {
+      doc.addPage({
+        size: [mmToPt(RECEIPT_PAGE_WIDTH_MM), mmToPt(RECEIPT_PAGE_HEIGHT_MM)],
+        margin: 0
+      });
+    }
+
+    doc.save();
+    doc.roundedRect(cardX, cardY, cardWidth, cardHeight, mmToPt(3.2))
+      .fillAndStroke('#FFFFFF', RECEIPT_COLORS.border);
+    doc.roundedRect(cardX, cardY, cardWidth, cardHeight, mmToPt(3.2)).clip();
+
+    const headerState = drawReceiptHeaderV2({ doc, innerX, innerY, innerWidth, payment, invoice });
+    const pageTableTop = headerState.infoBottom + mmToPt(RECEIPT_PAGE_GAP_MM);
+    const tableState = drawReceiptTablePage({
+      doc,
+      innerX,
+      innerWidth,
+      topY: pageTableTop,
+      rows,
+      columns,
+      showLessAmount
+    });
+
+    if (pageIndex === totalPages - 1) {
+      const summaryTop = Math.max(
+        tableState.tableBottom + mmToPt(RECEIPT_SUMMARY_GAP_MM),
+        footerY - summaryHeight - mmToPt(1.0)
+      );
+      drawReceiptSummaryPage({
+        doc,
+        innerX,
+        innerWidth,
+        topY: summaryTop,
+        totals,
+        payment
+      });
+    }
+
+    drawReceiptFooter({
+      doc,
+      x: cardX,
+      y: footerY,
+      width: cardWidth,
+      height: footerHeight
+    });
+
+    doc.restore();
   });
 };
 
@@ -1290,6 +1830,8 @@ export const getPaymentHistory = async (req, res) => {
 export const generateInvoicePDF = async (req, res) => {
   try {
     const { id } = req.params;
+    const downloadMode = String(req.query.download ?? 'true').toLowerCase();
+    const shouldDownload = !['false', '0', 'no', 'inline'].includes(downloadMode);
 
     const invoiceContext = await getInvoicePaymentData(id);
 
@@ -1311,10 +1853,11 @@ export const generateInvoicePDF = async (req, res) => {
     res.setHeader('Content-Type', 'application/pdf');
     const safeInvoiceNumber = String(invoice.invoiceNumber || payment._id || 'invoice').replace(/[^a-zA-Z0-9._-]/g, '_');
     const safePaymentId = String(payment._id || Date.now()).replace(/[^a-zA-Z0-9._-]/g, '_');
-    res.setHeader('Content-Disposition', `attachment; filename=invoice_${safeInvoiceNumber}_${safePaymentId}.pdf`);
+    const dispositionType = shouldDownload ? 'attachment' : 'inline';
+    res.setHeader('Content-Disposition', `${dispositionType}; filename=invoice_${safeInvoiceNumber}_${safePaymentId}.pdf`);
 
     doc.pipe(res);
-    drawReceiptPageShell({
+    drawReceiptPdfDocument({
       doc,
       payment,
       invoice,
