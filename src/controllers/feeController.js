@@ -490,7 +490,9 @@ export const assignBulkFee = async (req, res) => {
               finalFee.remainingAmount = Math.max(0, amount - (existing.paidAmount || 0));
             }
           }
-        } else if (amount > 0) {
+        } else if (amount > 0 && cat.mandatory) {
+          // ONLY create new StudentFee records for MANDATORY fee categories!
+          // Optional (non-mandatory) categories must NOT be automatically assigned to students when assigning class default fees.
           const newFee = {
             studentId,
             feeCategoryId: cat._id,
