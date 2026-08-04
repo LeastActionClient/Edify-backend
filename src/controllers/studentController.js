@@ -25,6 +25,12 @@ import { isDuplicateAdmissionNumberError, peekNextAdmissionNumber } from '../ser
 
 export const assignClassDefaultFeesToStudent = async (student, session = null) => {
   try {
+    const isRTEStudent = student.isRTE || student.RTE === 'RTE' || student.RTE === 'Yes' || student.RTE === 'yes';
+    if (isRTEStudent) {
+      // RTE students do not receive standard class mandatory tuition fees automatically
+      return 0;
+    }
+
     const studentId = student._id;
     const currentClass = student.currentClass;
     const section = student.section;
@@ -782,7 +788,7 @@ export const addStudentManually = async (req, res) => {
       }
       const normalize = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
       if (normalize(application.applyingClass) !== normalize(currentClass)) {
-        throw new Error('Application class does not match selected class.');
+        application.applyingClass = currentClass;
       }
     }
 

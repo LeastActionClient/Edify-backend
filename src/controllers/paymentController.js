@@ -1520,6 +1520,28 @@ export const createPayment = async (req, res) => {
 
     const allStudentFees = await StudentFee.find({ studentId }).populate('feeCategoryId').session(session);
 
+    const isPrevFee = (f) => (f.academicYear && student.academicYear && f.academicYear !== student.academicYear) || (!f.academicYear && f.className && student.currentClass && f.className !== student.currentClass);
+
+    const unselectedPreviousYearPending = allStudentFees.filter(sf => {
+      if (!isPrevFee(sf)) return false;
+      const remaining = sf.remainingAmount || 0;
+      if (remaining <= 0) return false;
+      const alloc = targetAllocations.find(a => a.studentFeeId === sf._id.toString());
+      const allocAmt = alloc ? (parseFloat(alloc.amount) || 0) : 0;
+      return (remaining - allocAmt) > 0;
+    });
+
+    if (unselectedPreviousYearPending.length > 0) {
+      const hasCurrentYearInPayment = unpaidFees.some(fee => !isPrevFee(fee));
+      if (hasCurrentYearInPayment) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          error: 'Please clear all previous class pending fees before paying current class fees.'
+        });
+      }
+    }
+
     for (const fee of unpaidFees) {
       const catName = fee.feeCategoryId?.name || '';
       const termInfo = parseTermInfo(catName);
@@ -1527,6 +1549,17 @@ export const createPayment = async (req, res) => {
       if (termInfo.isTerm) {
         const previousTermFees = allStudentFees.filter(otherFee => {
           if (otherFee._id.toString() === fee._id.toString()) return false;
+
+          const feeYear = fee.academicYear || '';
+          const otherYear = otherFee.academicYear || '';
+          const feeClass = fee.className || '';
+          const otherClass = otherFee.className || '';
+
+          const sameYear = (!feeYear || !otherYear) || (feeYear === otherYear);
+          const sameClass = (!feeClass || !otherClass) || (feeClass === otherClass);
+
+          if (!sameYear || !sameClass) return false;
+
           const otherCatName = otherFee.feeCategoryId?.name || '';
           const otherTermInfo = parseTermInfo(otherCatName);
           return otherTermInfo.isTerm &&

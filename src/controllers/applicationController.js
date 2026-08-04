@@ -286,9 +286,10 @@ export const approveApplication = async (req, res) => {
     const createdStudents = await Student.create([studentPayload], { session });
     const newStudent = createdStudents[0];
 
+      const isRTEStudent = newStudent.isRTE || newStudent.RTE === 'RTE' || newStudent.RTE === 'Yes' || newStudent.RTE === 'yes' || application.isRTE || application.RTE === 'RTE';
       const classData = await Class.findOne({ name: application.applyingClass }).session(session);
 
-      if (classData) {
+      if (!isRTEStudent && classData) {
         let defaultFees = {};
         if (classData.defaultFees) {
           defaultFees = { ...classData.defaultFees };

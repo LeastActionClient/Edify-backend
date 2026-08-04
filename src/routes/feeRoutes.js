@@ -1,5 +1,17 @@
 import { Router } from 'express';
-import { getFeeCategories, createFeeCategory, updateFeeCategory, deleteFeeCategory, assignFeeToStudent, assignBulkFee } from '../controllers/feeController.js';
+import { 
+  getFeeCategories, 
+  createFeeCategory, 
+  updateFeeCategory, 
+  deleteFeeCategory, 
+  assignFeeToStudent, 
+  assignBulkFee,
+  getCategoryStudentAssignments,
+  assignCategoryToStudents,
+  removeCategoryStudentAssignment,
+  getRTEStudents,
+  assignRTEStudentsFees
+} from '../controllers/feeController.js';
 import { authenticate } from '../middlewares/authMiddleware.js';
 
 const router = Router();
@@ -13,5 +25,12 @@ router.delete('/categories/:id', deleteFeeCategory);
 
 router.post('/assign-bulk', assignBulkFee);
 router.post('/assign/:studentId', assignFeeToStudent);
+
+router.get('/category-assignments/:categoryId', getCategoryStudentAssignments);
+router.post('/assign-category-students', assignCategoryToStudents);
+router.delete('/remove-student-assignment/:studentFeeId', removeCategoryStudentAssignment);
+
+router.get('/rte-students', getRTEStudents);
+router.post('/assign-rte-students', assignRTEStudentsFees);
 
 export default router;

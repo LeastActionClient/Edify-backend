@@ -348,7 +348,7 @@ export const assignBulkFee = async (req, res) => {
     }
 
     const students = await Student.find(whereClause)
-      .select('_id currentClass section academicYear includedChargesTotal activitiesTotal')
+      .select('_id currentClass section academicYear includedChargesTotal activitiesTotal isRTE RTE')
       .lean();
 
     const validCategories = await FeeCategory.find()
@@ -421,9 +421,20 @@ export const assignBulkFee = async (req, res) => {
     const assignedCatIds = new Set(Object.keys(feesJson));
 
     for (const student of students) {
+      const isRTEStudent = student.isRTE || student.RTE === 'RTE' || student.RTE === 'Yes' || student.RTE === 'yes';
+      if (isRTEStudent) {
+        // RTE students do not receive standard class mandatory tuition fees from class bulk assignment
+        continue;
+      }
+
       const studentId = student._id;
       const studentIdStr = studentId.toString();
-      const currentFees = feesByStudent.get(studentIdStr) || [];
+      const allStudentFees = feesByStudent.get(studentIdStr) || [];
+      const currentFees = allStudentFees.filter(f => 
+        (!f.className || f.className === student.currentClass) &&
+        (!f.academicYear || f.academicYear === student.academicYear)
+      );
+
       const feesByCategory = new Map();
       const finalFeesById = new Map();
       const deletedFeeIds = new Set();
@@ -560,5 +571,356 @@ export const assignBulkFee = async (req, res) => {
     res.status(500).json({
       error: 'Error assigning fees to class: ' + (error instanceof Error ? error.message : String(error))
     });
+  }
+};
+
+export const getCategoryStudentAssignments = async (req, res) => {
+  try {
+    const { categoryId } = req.params;
+    const { className, section, academicYear, search } = req.query;
+
+    const category = await FeeCategory.findById(categoryId).lean();
+    if (!category) {
+      return res.status(404).json({ error: 'Fee Category not found' });
+    }
+
+    const whereClause = {};
+    if (className) whereClause.currentClass = className;
+    if (section) whereClause.section = section;
+    if (academicYear) whereClause.academicYear = academicYear;
+
+    if (search && search.trim()) {
+      const q = search.trim();
+      whereClause.$or = [
+        { studentName: { $regex: q, $options: 'i' } },
+        { admissionNumber: { $regex: q, $options: 'i' } }
+      ];
+    }
+
+    const students = await Student.find(whereClause)
+      .select('_id admissionNumber studentName currentClass section academicYear')
+      .sort({ studentName: 1 })
+      .lean();
+
+    const studentIds = students.map(s => s._id);
+    const existingFees = await StudentFee.find({
+      feeCategoryId: categoryId,
+      studentId: { $in: studentIds }
+    }).lean();
+
+    const feeMap = new Map();
+    existingFees.forEach(f => {
+      feeMap.set(f.studentId.toString(), f);
+    });
+
+    const result = students.map(student => {
+      const fee = feeMap.get(student._id.toString());
+      return {
+        ...student,
+        isAssigned: !!fee,
+        studentFeeId: fee ? fee._id : null,
+        totalAmount: fee ? fee.totalAmount : 0,
+        paidAmount: fee ? fee.paidAmount : 0,
+        remainingAmount: fee ? fee.remainingAmount : 0
+      };
+    });
+
+    res.json({ category, students: result });
+  } catch (error) {
+    console.error('Error fetching category student assignments:', error);
+    res.status(500).json({ error: 'Error loading student assignments' });
+  }
+};
+
+export const assignCategoryToStudents = async (req, res) => {
+  try {
+    const { feeCategoryId, studentIds, amount } = req.body;
+    const feeAmount = parseFloat(amount || 0);
+
+    if (!feeCategoryId || !studentIds || !Array.isArray(studentIds) || studentIds.length === 0 || feeAmount <= 0) {
+      return res.status(400).json({ error: 'Please select at least one student and enter a valid fee amount.' });
+    }
+
+    const category = await FeeCategory.findById(feeCategoryId);
+    if (!category) {
+      return res.status(404).json({ error: 'Fee Category not found' });
+    }
+
+    const students = await Student.find({ _id: { $in: studentIds } });
+    const existingFees = await StudentFee.find({
+      feeCategoryId,
+      studentId: { $in: studentIds }
+    });
+
+    const feeMap = new Map(existingFees.map(f => [f.studentId.toString(), f]));
+    const feeOps = [];
+    const updatedStudentIds = new Set();
+    let skippedPaidCount = 0;
+
+    for (const student of students) {
+      const sIdStr = student._id.toString();
+      const existing = feeMap.get(sIdStr);
+
+      if (existing) {
+        if ((existing.paidAmount || 0) === 0) {
+          feeOps.push({
+            updateOne: {
+              filter: { _id: existing._id },
+              update: {
+                $set: {
+                  totalAmount: feeAmount,
+                  remainingAmount: feeAmount
+                }
+              }
+            }
+          });
+          updatedStudentIds.add(sIdStr);
+        } else {
+          skippedPaidCount++;
+        }
+      } else {
+        feeOps.push({
+          insertOne: {
+            document: {
+              studentId: student._id,
+              feeCategoryId: category._id,
+              totalAmount: feeAmount,
+              remainingAmount: feeAmount,
+              paidAmount: 0,
+              className: student.currentClass,
+              academicYear: student.academicYear
+            }
+          }
+        });
+        updatedStudentIds.add(sIdStr);
+      }
+    }
+
+    if (feeOps.length > 0) {
+      await StudentFee.bulkWrite(feeOps, { ordered: false });
+    }
+
+    for (const sId of updatedStudentIds) {
+      await recalculateStudentTotals(sId);
+    }
+
+    res.status(200).json({
+      message: `Assigned ${category.name} (₹${feeAmount}) to ${updatedStudentIds.size} student(s) successfully.${skippedPaidCount > 0 ? ` (${skippedPaidCount} student(s) skipped due to existing payment history)` : ''}`,
+      assignedCount: updatedStudentIds.size,
+      skippedCount: skippedPaidCount
+    });
+  } catch (error) {
+    console.error('Error assigning category to students:', error);
+    res.status(500).json({ error: 'Error assigning fee to students: ' + (error instanceof Error ? error.message : String(error)) });
+  }
+};
+
+export const removeCategoryStudentAssignment = async (req, res) => {
+  try {
+    const { studentFeeId } = req.params;
+    const feeRecord = await StudentFee.findById(studentFeeId);
+    if (!feeRecord) {
+      return res.status(404).json({ error: 'Fee assignment record not found.' });
+    }
+
+    if ((feeRecord.paidAmount || 0) > 0) {
+      return res.status(400).json({ error: 'This fee has payment history and cannot be removed.' });
+    }
+
+    const studentId = feeRecord.studentId;
+    await StudentFee.findByIdAndDelete(studentFeeId);
+
+    await recalculateStudentTotals(studentId);
+
+    res.status(200).json({ message: 'Fee assignment removed successfully.' });
+  } catch (error) {
+    console.error('Error removing student fee assignment:', error);
+    res.status(500).json({ error: 'Error removing fee assignment.' });
+  }
+};
+
+export const getRTEStudents = async (req, res) => {
+  try {
+    const { className, section, academicYear, search } = req.query;
+
+    const whereClause = {
+      $or: [
+        { isRTE: true },
+        { RTE: 'RTE' },
+        { RTE: 'Yes' },
+        { RTE: 'yes' }
+      ]
+    };
+    if (className) whereClause.currentClass = className;
+    if (section) whereClause.section = section;
+    if (academicYear) whereClause.academicYear = academicYear;
+
+    if (search && search.trim()) {
+      const q = search.trim();
+      const searchOr = [
+        { studentName: { $regex: q, $options: 'i' } },
+        { admissionNumber: { $regex: q, $options: 'i' } }
+      ];
+      whereClause.$and = [{ $or: searchOr }];
+    }
+
+    const students = await Student.find(whereClause)
+      .select('_id admissionNumber studentName currentClass section academicYear isRTE RTE status')
+      .sort({ studentName: 1 })
+      .lean();
+
+    if (students.length === 0) {
+      return res.json([]);
+    }
+
+    const studentIds = students.map(s => s._id);
+    const existingFees = await StudentFee.find({ studentId: { $in: studentIds } })
+      .select('studentId feeCategoryId totalAmount remainingAmount paidAmount className academicYear')
+      .lean();
+
+    const feesMap = new Map();
+    existingFees.forEach(f => {
+      const sId = f.studentId.toString();
+      if (!feesMap.has(sId)) feesMap.set(sId, []);
+      feesMap.get(sId).push({
+        feeCategoryId: f.feeCategoryId.toString(),
+        totalAmount: f.totalAmount,
+        remainingAmount: f.remainingAmount,
+        paidAmount: f.paidAmount
+      });
+    });
+
+    const result = students.map(s => ({
+      ...s,
+      studentFees: feesMap.get(s._id.toString()) || []
+    }));
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching RTE students:', error);
+    res.status(500).json({ error: 'Error loading RTE students' });
+  }
+};
+
+export const assignRTEStudentsFees = async (req, res) => {
+  try {
+    const { studentIds, categoryAmounts } = req.body;
+
+    if (!studentIds || !Array.isArray(studentIds) || studentIds.length === 0) {
+      return res.status(400).json({ error: 'Please select at least one RTE student.' });
+    }
+
+    if (!categoryAmounts || !Array.isArray(categoryAmounts) || categoryAmounts.length === 0) {
+      return res.status(400).json({ error: 'Please select at least one fee category.' });
+    }
+
+    const validCategoryAmounts = categoryAmounts.filter(ca => ca.feeCategoryId && parseFloat(ca.amount || 0) > 0);
+    if (validCategoryAmounts.length === 0) {
+      return res.status(400).json({ error: 'Please enter a valid amount greater than 0 for all selected fee categories.' });
+    }
+
+    const students = await Student.find({
+      _id: { $in: studentIds },
+      $or: [
+        { isRTE: true },
+        { RTE: 'RTE' },
+        { RTE: 'Yes' },
+        { RTE: 'yes' }
+      ]
+    });
+    if (students.length === 0) {
+      return res.status(404).json({ error: 'No matching RTE students found.' });
+    }
+
+    const catIds = validCategoryAmounts.map(ca => ca.feeCategoryId);
+    const categories = await FeeCategory.find({ _id: { $in: catIds } });
+    const catMap = new Map(categories.map(c => [c._id.toString(), c]));
+
+    const existingFees = await StudentFee.find({
+      studentId: { $in: studentIds },
+      feeCategoryId: { $in: catIds }
+    });
+
+    const feeMap = new Map();
+    existingFees.forEach(f => {
+      const key = `${f.studentId.toString()}_${f.feeCategoryId.toString()}`;
+      feeMap.set(key, f);
+    });
+
+    const feeOps = [];
+    const updatedStudentIds = new Set();
+    let skippedPaidCount = 0;
+
+    for (const student of students) {
+      const sIdStr = student._id.toString();
+      for (const ca of validCategoryAmounts) {
+        const catIdStr = ca.feeCategoryId.toString();
+        const category = catMap.get(catIdStr);
+        if (!category) continue;
+
+        const feeAmount = parseFloat(ca.amount);
+        const key = `${sIdStr}_${catIdStr}`;
+        const existing = feeMap.get(key);
+
+        if (existing) {
+          if ((existing.paidAmount || 0) === 0) {
+            feeOps.push({
+              updateOne: {
+                filter: { _id: existing._id },
+                update: {
+                  $set: {
+                    totalAmount: feeAmount,
+                    remainingAmount: feeAmount
+                  }
+                }
+              }
+            });
+            updatedStudentIds.add(sIdStr);
+          } else {
+            skippedPaidCount++;
+          }
+        } else {
+          feeOps.push({
+            insertOne: {
+              document: {
+                studentId: student._id,
+                feeCategoryId: category._id,
+                totalAmount: feeAmount,
+                remainingAmount: feeAmount,
+                paidAmount: 0,
+                className: student.currentClass,
+                academicYear: student.academicYear
+              }
+            }
+          });
+          updatedStudentIds.add(sIdStr);
+        }
+      }
+    }
+
+    if (feeOps.length > 0) {
+      await StudentFee.bulkWrite(feeOps, { ordered: false });
+    }
+
+    // For RTE students, automatically clean up any unpaid class default mandatory fees that were not explicitly assigned via Assign RTE Students
+    const assignedCatIds = validCategoryAmounts.map(ca => ca.feeCategoryId);
+    await StudentFee.deleteMany({
+      studentId: { $in: studentIds },
+      feeCategoryId: { $nin: assignedCatIds },
+      paidAmount: 0
+    });
+
+    for (const sId of studentIds) {
+      await recalculateStudentTotals(sId);
+    }
+
+    res.status(200).json({
+      message: `Assigned selected fee categories to ${updatedStudentIds.size} RTE student(s) successfully.${skippedPaidCount > 0 ? ` (${skippedPaidCount} fee assignment(s) skipped due to existing payment history)` : ''}`,
+      assignedStudentsCount: updatedStudentIds.size,
+      skippedCount: skippedPaidCount
+    });
+  } catch (error) {
+    console.error('Error assigning fees to RTE students:', error);
+    res.status(500).json({ error: 'Error assigning fees to RTE students: ' + (error instanceof Error ? error.message : String(error)) });
   }
 };
