@@ -10,7 +10,9 @@ import {
   assignCategoryToStudents,
   removeCategoryStudentAssignment,
   getRTEStudents,
-  assignRTEStudentsFees
+  assignRTEStudentsFees,
+  getStudentsForFeeAssignment,
+  assignMultipleCategoriesToStudents
 } from '../controllers/feeController.js';
 import { authenticate } from '../middlewares/authMiddleware.js';
 
@@ -32,5 +34,8 @@ router.delete('/remove-student-assignment/:studentFeeId', removeCategoryStudentA
 
 router.get('/rte-students', getRTEStudents);
 router.post('/assign-rte-students', assignRTEStudentsFees);
+
+router.get('/students-for-assignment', getStudentsForFeeAssignment);
+router.post('/assign-multiple-categories-students', assignMultipleCategoriesToStudents);
 
 export default router;

@@ -924,3 +924,188 @@ export const assignRTEStudentsFees = async (req, res) => {
     res.status(500).json({ error: 'Error assigning fees to RTE students: ' + (error instanceof Error ? error.message : String(error)) });
   }
 };
+
+export const getStudentsForFeeAssignment = async (req, res) => {
+  try {
+    const { className, section, academicYear, search, studentStatus, rteType } = req.query;
+
+    const whereClause = {};
+    if (className) whereClause.currentClass = className;
+    if (section) whereClause.section = section;
+    if (academicYear) whereClause.academicYear = academicYear;
+    if (studentStatus && studentStatus !== 'all') {
+      whereClause.studentStatus = { $regex: new RegExp(`^${studentStatus.trim()}$`, 'i') };
+    }
+
+    if (rteType === 'RTE') {
+      whereClause.$or = [
+        { isRTE: true },
+        { RTE: 'RTE' },
+        { RTE: 'Yes' },
+        { RTE: 'yes' }
+      ];
+    } else if (rteType === 'General') {
+      whereClause.$and = [
+        { isRTE: { $ne: true } },
+        { RTE: { $nin: ['RTE', 'Yes', 'yes'] } }
+      ];
+    }
+
+    if (search && search.trim()) {
+      const q = search.trim();
+      const searchOr = [
+        { studentName: { $regex: q, $options: 'i' } },
+        { admissionNumber: { $regex: q, $options: 'i' } }
+      ];
+      if (whereClause.$or) {
+        const existingOr = whereClause.$or;
+        delete whereClause.$or;
+        whereClause.$and = whereClause.$and || [];
+        whereClause.$and.push({ $or: existingOr }, { $or: searchOr });
+      } else if (whereClause.$and) {
+        whereClause.$and.push({ $or: searchOr });
+      } else {
+        whereClause.$or = searchOr;
+      }
+    }
+
+    const students = await Student.find(whereClause)
+      .select('_id admissionNumber studentName currentClass section academicYear RTE isRTE studentStatus')
+      .sort({ studentName: 1 })
+      .lean();
+
+    const result = students.map(s => {
+      const isRTE = s.isRTE || s.RTE === 'RTE' || s.RTE === 'Yes' || s.RTE === 'yes';
+      return {
+        _id: s._id,
+        admissionNumber: s.admissionNumber,
+        studentName: s.studentName,
+        currentClass: s.currentClass,
+        section: s.section || 'A',
+        academicYear: s.academicYear || '',
+        courseType: isRTE ? 'RTE' : 'General',
+        studentStatus: s.studentStatus || 'Active'
+      };
+    });
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching students for fee assignment:', error);
+    res.status(500).json({ error: 'Error fetching students for fee assignment' });
+  }
+};
+
+export const assignMultipleCategoriesToStudents = async (req, res) => {
+  try {
+    const { categoryAmounts, studentIds } = req.body;
+
+    if (!studentIds || !Array.isArray(studentIds) || studentIds.length === 0) {
+      return res.status(400).json({ error: 'Please select at least one student.' });
+    }
+
+    if (!categoryAmounts || !Array.isArray(categoryAmounts) || categoryAmounts.length === 0) {
+      return res.status(400).json({ error: 'Please select at least one fee category.' });
+    }
+
+    const validCategoryAmounts = categoryAmounts.filter(ca => ca.feeCategoryId && parseFloat(ca.amount || 0) > 0);
+    if (validCategoryAmounts.length === 0) {
+      return res.status(400).json({ error: 'Please enter a valid amount greater than 0 for all selected fee categories.' });
+    }
+
+    const students = await Student.find({ _id: { $in: studentIds } });
+    if (students.length === 0) {
+      return res.status(404).json({ error: 'No matching students found.' });
+    }
+
+    const catIds = validCategoryAmounts.map(ca => ca.feeCategoryId);
+    const categories = await FeeCategory.find({ _id: { $in: catIds } });
+    const catMap = new Map(categories.map(c => [c._id.toString(), c]));
+
+    const existingFees = await StudentFee.find({
+      studentId: { $in: studentIds },
+      feeCategoryId: { $in: catIds }
+    });
+
+    const feeMap = new Map();
+    existingFees.forEach(f => {
+      const key = `${f.studentId.toString()}_${f.feeCategoryId.toString()}_${f.className || ''}`;
+      feeMap.set(key, f);
+    });
+
+    const feeOps = [];
+    const modifiedStudentIds = new Set();
+    let duplicatesSkipped = 0;
+    let assignmentsCreated = 0;
+
+    for (const student of students) {
+      const sIdStr = student._id.toString();
+      for (const ca of validCategoryAmounts) {
+        const catIdStr = ca.feeCategoryId.toString();
+        const category = catMap.get(catIdStr);
+        if (!category) continue;
+
+        const feeAmount = parseFloat(ca.amount);
+        const currentClassKey = `${sIdStr}_${catIdStr}_${student.currentClass || ''}`;
+        const emptyClassKey = `${sIdStr}_${catIdStr}_`;
+        const existing = feeMap.get(currentClassKey) || feeMap.get(emptyClassKey);
+
+        if (existing) {
+          if ((existing.paidAmount || 0) === 0) {
+            feeOps.push({
+              updateOne: {
+                filter: { _id: existing._id },
+                update: {
+                  $set: {
+                    totalAmount: feeAmount,
+                    remainingAmount: feeAmount,
+                    className: student.currentClass,
+                    academicYear: student.academicYear
+                  }
+                }
+              }
+            });
+            assignmentsCreated++;
+            modifiedStudentIds.add(sIdStr);
+          } else {
+            duplicatesSkipped++;
+          }
+        } else {
+          feeOps.push({
+            insertOne: {
+              document: {
+                studentId: student._id,
+                feeCategoryId: category._id,
+                totalAmount: feeAmount,
+                remainingAmount: feeAmount,
+                paidAmount: 0,
+                className: student.currentClass,
+                academicYear: student.academicYear
+              }
+            }
+          });
+          assignmentsCreated++;
+          modifiedStudentIds.add(sIdStr);
+        }
+      }
+    }
+
+    if (feeOps.length > 0) {
+      await StudentFee.bulkWrite(feeOps, { ordered: false });
+    }
+
+    for (const sId of modifiedStudentIds) {
+      await recalculateStudentTotals(sId);
+    }
+
+    res.status(200).json({
+      studentsProcessed: students.length,
+      assignmentsCreated,
+      duplicatesSkipped,
+      message: `Successfully processed ${students.length} student(s): ${assignmentsCreated} assignment(s) created, ${duplicatesSkipped} duplicate(s) skipped.`
+    });
+  } catch (error) {
+    console.error('Error assigning multiple categories to students:', error);
+    res.status(500).json({ error: 'Error assigning categories: ' + (error instanceof Error ? error.message : String(error)) });
+  }
+};
+

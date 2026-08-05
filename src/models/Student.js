@@ -14,6 +14,7 @@ const studentSchema = new mongoose.Schema({
   section: { type: String },
   siblings: { type: mongoose.Schema.Types.Mixed },
   photoUrl: { type: String },
+  passport_photo: { type: String },
   dateOfBirth: { type: Date },
   gender: { type: String },
   bloodGroup: { type: String },

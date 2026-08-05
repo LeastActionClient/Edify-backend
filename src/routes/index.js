@@ -13,6 +13,7 @@ import activityRoutes from './activityRoutes.js';
 import exportRoutes from './exportRoutes.js';
 import academicYearRoutes from './academicYearRoutes.js';
 import concessionRoutes from './concessionRoutes.js';
+import idCardRoutes from './idCardRoutes.js';
 
 const router = Router();
 
@@ -30,6 +31,7 @@ router.use('/activities', activityRoutes);
 router.use('/exports', exportRoutes);
 router.use('/academic-years', academicYearRoutes);
 router.use('/concessions', concessionRoutes);
+router.use('/id-cards', idCardRoutes);
 
 
 

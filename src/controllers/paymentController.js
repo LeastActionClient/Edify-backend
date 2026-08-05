@@ -779,6 +779,93 @@ const drawReceiptPageShell = ({
   });
 };
 
+export const ACADEMIC_FEE_CATEGORIES = [
+  'book fee',
+  'term 1',
+  'term 2',
+  'term 3',
+  'tuition term 1',
+  'tuition term 2',
+  'tuition term 3',
+  'abacus term 1',
+  'abacus term 2',
+  'abacus term 3',
+  'term',
+  'tuition term',
+  'abacus term'
+];
+
+export const isAcademicCategory = (feeName) => {
+  if (!feeName) return false;
+  const normalized = normalizeSpaces(feeName).toLowerCase();
+
+  if (ACADEMIC_FEE_CATEGORIES.includes(normalized)) {
+    return true;
+  }
+
+  return (
+    /^book fee/i.test(normalized) ||
+    /^term\s*\d*$/i.test(normalized) ||
+    /^tuition\s*term\s*\d*$/i.test(normalized) ||
+    /^abacus\s*term\s*\d*$/i.test(normalized)
+  );
+};
+
+export const getSplitBillsForReceipt = (payment) => {
+  const allEntries = parsePaymentEntriesForReceipt(payment);
+
+  const academicEntries = [];
+  const additionalEntries = [];
+
+  allEntries.forEach((entry) => {
+    if (isAcademicCategory(entry.rawName)) {
+      academicEntries.push(entry);
+    } else {
+      additionalEntries.push(entry);
+    }
+  });
+
+  const bills = [];
+
+  if (academicEntries.length > 0) {
+    const groupedRows = groupEntriesListForReceipt(academicEntries);
+    bills.push({
+      id: 'academic',
+      type: 'ACADEMIC',
+      headerTitle: { line1: 'ACADEMIC FEE', line2: 'RECEIPT' },
+      entries: academicEntries,
+      groupedRows,
+      totals: calculateReceiptTotals(groupedRows)
+    });
+  }
+
+  if (additionalEntries.length > 0) {
+    const groupedRows = groupEntriesListForReceipt(additionalEntries);
+    bills.push({
+      id: 'additional',
+      type: 'ADDITIONAL',
+      headerTitle: { line1: 'ADDITIONAL CHARGES', line2: 'RECEIPT' },
+      entries: additionalEntries,
+      groupedRows,
+      totals: calculateReceiptTotals(groupedRows)
+    });
+  }
+
+  if (bills.length === 0) {
+    const groupedRows = groupFeeAllocationsForReceipt(payment);
+    bills.push({
+      id: 'academic',
+      type: 'ACADEMIC',
+      headerTitle: { line1: 'ACADEMIC FEE', line2: 'RECEIPT' },
+      entries: allEntries,
+      groupedRows,
+      totals: calculateReceiptTotals(groupedRows)
+    });
+  }
+
+  return bills;
+};
+
 const buildReceiptSummaryRows = ({ totals, payment }) => {
   const paidAmount = toNumber(totals?.paidAmount || payment?.amount);
 
@@ -908,10 +995,17 @@ const measureReceiptHeaderHeight = (doc, { payment, invoice, innerWidth }) => {
   return infoTop + rowHeights.reduce((sum, height, index) => sum + height + (index > 0 ? rowGap : 0), 0) + mmToPt(1.0);
 };
 
-const drawReceiptHeaderV2 = ({ doc, innerX, innerY, innerWidth, payment, invoice }) => {
+const drawReceiptHeaderV2 = ({ doc, innerX, innerY, innerWidth, payment, invoice, headerTitle }) => {
   const logoWidth = mmToPt(70);
   const logoHeight = mmToPt(14);
-  const badgeWidth = mmToPt(20.5);
+  const line1 = headerTitle?.line1 || 'FEE';
+  const line2 = headerTitle?.line2 || 'RECEIPT';
+
+  doc.font('Helvetica-Bold').fontSize(8.8);
+  const line1Width = doc.widthOfString(line1);
+  const line2Width = doc.widthOfString(line2);
+  const textWidth = Math.max(line1Width, line2Width);
+  const badgeWidth = Math.max(mmToPt(20.5), textWidth + mmToPt(6.0));
   const badgeHeight = mmToPt(10.5);
   const badgeX = innerX + innerWidth - badgeWidth;
 
@@ -929,12 +1023,12 @@ const drawReceiptHeaderV2 = ({ doc, innerX, innerY, innerWidth, payment, invoice
   doc.roundedRect(badgeX, innerY + mmToPt(1.0), badgeWidth, badgeHeight, mmToPt(4))
     .fillAndStroke(RECEIPT_COLORS.lightOrange, RECEIPT_COLORS.lightOrange);
   doc.fillColor('#111111').font('Helvetica-Bold').fontSize(8.8)
-    .text('FEE', badgeX, innerY + mmToPt(3.0), {
+    .text(line1, badgeX, innerY + mmToPt(3.0), {
       width: badgeWidth,
       align: 'center',
       lineBreak: false
     });
-  doc.text('RECEIPT', badgeX, innerY + mmToPt(7.0), {
+  doc.text(line2, badgeX, innerY + mmToPt(7.0), {
     width: badgeWidth,
     align: 'center',
     lineBreak: false
@@ -1060,10 +1154,6 @@ const measureReceiptSummaryHeight = () => mmToPt(11.0);
 
 const drawReceiptTablePage = ({ doc, innerX, innerWidth, topY, rows, columns, showLessAmount = false }) => {
   const headerHeight = mmToPt(6.2);
-  const rowHeights = rows.length > 0
-    ? rows.map((row) => row._rowHeight || measureReceiptRowHeight(doc, row, columns))
-    : [mmToPt(6.0)];
-  const tableHeight = headerHeight + rowHeights.reduce((sum, height) => sum + height, 0);
   const tableRadius = mmToPt(3.5);
   const descX = innerX;
   const totalX = descX + columns.descriptionWidth;
@@ -1072,10 +1162,9 @@ const drawReceiptTablePage = ({ doc, innerX, innerWidth, topY, rows, columns, sh
   const balanceX = paidX + columns.paidWidth;
 
   doc.save();
-  doc.roundedRect(innerX, topY, innerWidth, tableHeight, tableRadius)
+  doc.roundedRect(innerX, topY, innerWidth, 0, tableRadius)
     .fillAndStroke('#FFFFFF', RECEIPT_COLORS.border);
-  doc.roundedRect(innerX, topY, innerWidth, tableHeight, tableRadius).clip();
-
+  
   doc.rect(innerX, topY, innerWidth, headerHeight)
     .fillAndStroke(RECEIPT_COLORS.orange, RECEIPT_COLORS.orange);
 
@@ -1118,43 +1207,56 @@ const drawReceiptTablePage = ({ doc, innerX, innerWidth, topY, rows, columns, sh
     doc.fillColor(RECEIPT_COLORS.darkGrey).font('Helvetica').fontSize(7.3)
       .text('No fee details available.', innerX, rowTop + mmToPt(2.0), {
         width: innerWidth,
-        align: 'center'
+        align: 'center',
+        lineBreak: false
       });
+    rowTop += mmToPt(6.0);
   } else {
     rows.forEach((row, index) => {
-      const rowHeight = row._rowHeight || mmToPt(5.1);
-      const rowY = rowTop;
-      const fillColor = index % 2 === 0 ? '#FFFFFF' : RECEIPT_COLORS.alternateRow;
-
-      doc.rect(innerX, rowY, innerWidth, rowHeight).fill(fillColor);
-      if (index > 0) {
-        doc.moveTo(innerX, rowY).lineTo(innerX + innerWidth, rowY).lineWidth(0.4).strokeColor(RECEIPT_COLORS.border).stroke();
+      const rowHeight = row._rowHeight || measureReceiptRowHeight(doc, row, columns);
+      const isEven = index % 2 === 0;
+      if (!isEven) {
+        doc.rect(innerX, rowTop, innerWidth, rowHeight)
+          .fill('#FAFAFA');
       }
 
+      doc.moveTo(innerX, rowTop + rowHeight)
+        .lineTo(innerX + innerWidth, rowTop + rowHeight)
+        .lineWidth(0.4)
+        .strokeColor(RECEIPT_COLORS.border)
+        .stroke();
+
+      const descPaddingY = mmToPt(0.95);
+      const descPaddingX = mmToPt(1.2);
       doc.fillColor(RECEIPT_COLORS.text).font('Helvetica-Bold').fontSize(columns.amountFontSize)
-        .text(row.displayName, innerX + columns.paddingX, rowY + mmToPt(1.1), {
-          width: columns.descriptionWidth - columns.paddingX * 2,
-          align: 'left',
-          lineBreak: true
+        .text(String(row.displayName || '-'), innerX + descPaddingX, rowTop + descPaddingY, {
+          width: columns.descriptionWidth - descPaddingX * 2,
+          align: 'left'
         });
-      doc.text(formatReceiptMoney(row.totalAmount), totalX + columns.paddingX, rowY + mmToPt(1.1), {
+
+      const amountTextY = rowTop + (rowHeight - columns.amountFontSize) / 2 - mmToPt(0.5);
+
+      doc.text(formatReceiptMoney(row.totalAmount), totalX + columns.paddingX, amountTextY, {
         width: columns.totalWidth - columns.paddingX * 2,
         align: 'right',
         lineBreak: false
       });
+
       if (showLessAmount) {
-        doc.text(formatReceiptMoney(row.lessAmount ?? row.discountAmount ?? 0), lessX + columns.paddingX, rowY + mmToPt(1.1), {
+        doc.text(formatReceiptMoney(row.lessAmount ?? row.discountAmount ?? 0), lessX + columns.paddingX, amountTextY, {
           width: columns.lessWidth - columns.paddingX * 2,
           align: 'right',
           lineBreak: false
         });
       }
-      doc.text(formatReceiptMoney(row.paidAmount), paidX + columns.paddingX, rowY + mmToPt(1.1), {
+
+      doc.text(formatReceiptMoney(row.paidAmount), paidX + columns.paddingX, amountTextY, {
         width: columns.paidWidth - columns.paddingX * 2,
         align: 'right',
         lineBreak: false
       });
-      doc.text(formatReceiptMoney(row.balanceAmount), balanceX + columns.paddingX, rowY + mmToPt(1.1), {
+
+      doc.text(formatReceiptMoney(row.balanceAmount), balanceX + columns.paddingX, amountTextY, {
         width: columns.balanceWidth - columns.paddingX * 2,
         align: 'right',
         lineBreak: false
@@ -1164,15 +1266,10 @@ const drawReceiptTablePage = ({ doc, innerX, innerWidth, topY, rows, columns, sh
     });
   }
 
-  const tableBottom = topY + tableHeight;
-  [totalX, ...(showLessAmount ? [lessX] : []), paidX, balanceX].forEach((x) => {
-    doc.moveTo(x, topY).lineTo(x, tableBottom).lineWidth(0.45).strokeColor(RECEIPT_COLORS.border).stroke();
-  });
-
   doc.restore();
 
   return {
-    tableBottom
+    tableBottom: rowTop
   };
 };
 
@@ -1229,7 +1326,9 @@ const drawReceiptPdfDocument = ({
   payment,
   invoice,
   groupedRows,
-  totals
+  totals,
+  headerTitle,
+  isFirstPageInDoc = true
 }) => {
   const pageMargin = mmToPt(RECEIPT_MARGIN_MM);
   const cardX = pageMargin;
@@ -1256,7 +1355,7 @@ const drawReceiptPdfDocument = ({
   const totalPages = pages.length || 1;
 
   pages.forEach((rows, pageIndex) => {
-    if (pageIndex > 0) {
+    if (!isFirstPageInDoc || pageIndex > 0) {
       doc.addPage({
         size: [mmToPt(RECEIPT_PAGE_WIDTH_MM), mmToPt(RECEIPT_PAGE_HEIGHT_MM)],
         margin: 0
@@ -1268,7 +1367,7 @@ const drawReceiptPdfDocument = ({
       .fillAndStroke('#FFFFFF', RECEIPT_COLORS.border);
     doc.roundedRect(cardX, cardY, cardWidth, cardHeight, mmToPt(3.2)).clip();
 
-    const headerState = drawReceiptHeaderV2({ doc, innerX, innerY, innerWidth, payment, invoice });
+    const headerState = drawReceiptHeaderV2({ doc, innerX, innerY, innerWidth, payment, invoice, headerTitle });
     const pageTableTop = headerState.infoBottom + mmToPt(RECEIPT_PAGE_GAP_MM);
     const tableState = drawReceiptTablePage({
       doc,
@@ -1283,7 +1382,7 @@ const drawReceiptPdfDocument = ({
     if (pageIndex === totalPages - 1) {
       const summaryTop = Math.max(
         tableState.tableBottom + mmToPt(RECEIPT_SUMMARY_GAP_MM),
-        footerY - summaryHeight - mmToPt(1.0)
+        footerY - summaryHeight - mmToPt(2.0)
       );
       drawReceiptSummaryPage({
         doc,
@@ -1874,8 +1973,7 @@ export const generateInvoicePDF = async (req, res) => {
     }
 
     const { payment, invoice, summary } = invoiceContext;
-    const groupedRows = groupFeeAllocationsForReceipt(payment);
-    const receiptTotals = calculateReceiptTotals(groupedRows);
+    const splitBills = getSplitBillsForReceipt(payment);
     const { fullRemainingBalance } = summary;
 
     const doc = new PDFDocument({
@@ -1890,12 +1988,17 @@ export const generateInvoicePDF = async (req, res) => {
     res.setHeader('Content-Disposition', `${dispositionType}; filename=invoice_${safeInvoiceNumber}_${safePaymentId}.pdf`);
 
     doc.pipe(res);
-    drawReceiptPdfDocument({
-      doc,
-      payment,
-      invoice,
-      groupedRows,
-      totals: receiptTotals
+
+    splitBills.forEach((bill, index) => {
+      drawReceiptPdfDocument({
+        doc,
+        payment,
+        invoice,
+        groupedRows: bill.groupedRows,
+        totals: bill.totals,
+        headerTitle: bill.headerTitle,
+        isFirstPageInDoc: index === 0
+      });
     });
 
     if (payment.feeAllocations && payment.feeAllocations.length > 0) {

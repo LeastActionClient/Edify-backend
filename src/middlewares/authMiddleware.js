@@ -39,8 +39,9 @@ export const authorizeSuperAdmin = (req, res, next) => {
 };
 
 export const authorize = (...roles) => {
+  const allowedRoles = roles.flat();
   return (req, res, next) => {
-    if (!req.user || !roles.includes(req.user.role)) {
+    if (!req.user || !allowedRoles.includes(req.user.role)) {
       res.status(403).json({ error: 'Access denied. Insufficient permissions.' });
       return;
     }

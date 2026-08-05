@@ -819,6 +819,8 @@ export const addStudentManually = async (req, res) => {
       whatsappNumber: (whatsappNumber || '').trim(),
       emisNumber: (emisNo || emisNumber || '').trim(),
       emisNo: (emisNo || emisNumber || '').trim(),
+      photoUrl: req.body.photoUrl || req.body.passport_photo || '',
+      passport_photo: req.body.passport_photo || req.body.photoUrl || '',
       currentClass,
       section,
       addedById: req.user?.id,
@@ -1964,8 +1966,8 @@ export const updateStudent = async (req, res) => {
         emisNo: (emisNo !== undefined || emisNumber !== undefined ? (emisNo || emisNumber).trim() : (currentStudent.emisNo || currentStudent.emisNumber)) || '',
         city,
         state,
-        pincode,
-        photoUrl,
+        photoUrl: photoUrl || req.body.passport_photo || currentStudent.photoUrl,
+        passport_photo: req.body.passport_photo || photoUrl || currentStudent.passport_photo || currentStudent.photoUrl,
         RTE: resolvedRTE,
         dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
         admissionDate: admissionDate ? new Date(admissionDate) : null,
@@ -2309,5 +2311,22 @@ export const getNextAdmissionNumber = async (req, res) => {
   } catch (error) {
     console.error('Error getting next admission number:', error);
     res.status(500).json({ error: 'Failed to get next admission number' });
+  }
+};
+
+export const uploadStudentPhoto = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No photo uploaded.' });
+    }
+    const relativePath = `/uploads/photos/${req.file.filename}`;
+    res.status(200).json({
+      message: 'Photo uploaded successfully',
+      photoUrl: relativePath,
+      passport_photo: relativePath
+    });
+  } catch (error) {
+    console.error('Error uploading photo:', error);
+    res.status(500).json({ error: error.message || 'Failed to upload photo.' });
   }
 };
