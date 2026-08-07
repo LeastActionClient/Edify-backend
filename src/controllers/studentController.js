@@ -1,4 +1,6 @@
 import mongoose from 'mongoose';
+import fs from 'fs';
+import path from 'path';
 import xlsx from 'xlsx';
 import {
   Application,
@@ -1229,24 +1231,80 @@ export const bulkImportStudents = async (req, res) => {
   }
 };
 
-export const deleteStudent = async (req, res) => {
-  try {
-    const { id } = req.params;
+const getStudentPhotoFilePaths = (student) => {
+  const candidates = [student?.photoUrl, student?.passport_photo].filter(Boolean);
+  return [...new Set(candidates)].flatMap((url) => {
+    if (/^https?:\/\//i.test(url) || url.startsWith('data:')) return [];
+    const cleanPath = String(url).split('?')[0];
+    const match = cleanPath.match(/\/uploads\/photos\/([^/]+)$/);
+    return match ? [path.resolve('uploads', 'photos', match[1])] : [];
+  });
+};
 
-    const includedAssignments = await StudentIncludedCharge.find({ studentId: id });
-    for (const assignment of includedAssignments) {
-      await adjustIncludedChargeStock(assignment.includedChargeId, 1, {
-        performedById: req.user?.id,
-        reason: `Student ${id} deleted`,
-        referenceType: 'Student',
-        referenceId: id
-      });
+const deleteStudentPhotoFiles = (student) => {
+  for (const filePath of getStudentPhotoFilePaths(student)) {
+    try {
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+        console.log(`Deleted student photo file: ${filePath}`);
+      }
+    } catch (error) {
+      console.error(`Failed to delete student photo file: ${filePath}`, error);
     }
+  }
+};
 
-    const assignedFees = await StudentFee.find({ studentId: id });
+export const deleteStudent = async (req, res) => {
+  const { id } = req.params;
+
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return res.status(400).json({ error: 'Invalid student ID format.' });
+  }
+
+  const student = await Student.findById(id).lean();
+  if (!student) {
+    return res.status(404).json({ error: 'Student not found.' });
+  }
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  const deletedCounts = {
+    invoices: 0,
+    payments: 0,
+    concessions: 0,
+    fees: 0,
+    includedCharges: 0,
+    activities: 0,
+    enrollments: 0
+  };
+
+  let committed = false;
+
+  try {
+    // Collect this student's payments so any receipt linked by paymentId is removed too.
+    const studentPayments = await Payment.find({ studentId: id }).select('_id').session(session);
+    const paymentIds = studentPayments.map(p => p._id);
+
+    // 1. Receipts
+    const invoiceResult = await Invoice.deleteMany({
+      $or: [{ studentId: id }, { paymentId: { $in: paymentIds } }]
+    }, { session });
+    deletedCounts.invoices = invoiceResult.deletedCount;
+
+    // 2. Payments
+    const paymentResult = await Payment.deleteMany({ studentId: id }, { session });
+    deletedCounts.payments = paymentResult.deletedCount;
+
+    // 3. Fee concessions (hard-delete all, including previously soft-deleted ones)
+    const concessionResult = await StudentFeeConcession.deleteMany({ studentId: id }, { session });
+    deletedCounts.concessions = concessionResult.deletedCount;
+
+    // 4. Fee assignments + restore stock that was deducted for this student
+    const assignedFees = await StudentFee.find({ studentId: id }).session(session);
     for (const sf of assignedFees) {
       if (sf.feeCategoryId && sf.isStockDeducted) {
-        const cat = await FeeCategory.findById(sf.feeCategoryId);
+        const cat = await FeeCategory.findById(sf.feeCategoryId).session(session);
         if (cat && cat.isStockItem) {
           if (cat.name.toLowerCase() === 'uniform') {
             const topLen = parseFloat(sf.uniformDetails?.topLength || 0);
@@ -1255,8 +1313,8 @@ export const deleteStudent = async (req, res) => {
             const prevBottom = cat.bottomStock || 0;
             cat.topStock = prevTop + topLen;
             cat.bottomStock = prevBottom + bottomLen;
-            await cat.save();
-            await StockHistory.create({
+            await cat.save({ session });
+            await StockHistory.create([{
               categoryId: cat._id,
               categoryName: cat.name,
               previousStock: prevTop + prevBottom,
@@ -1266,43 +1324,90 @@ export const deleteStudent = async (req, res) => {
               referenceType: 'Student',
               referenceId: id,
               updatedBy: req.user?.id
-            });
+            }], { session });
           } else {
             const prev = cat.currentStock || 0;
-            cat.currentStock = prev + 1;
-            await cat.save();
-            await StockHistory.create({
+            const updatedCat = await FeeCategory.findOneAndUpdate(
+              { _id: cat._id },
+              { $inc: { currentStock: 1 } },
+              { new: true, session }
+            );
+            await StockHistory.create([{
               categoryId: cat._id,
               categoryName: cat.name,
               previousStock: prev,
-              updatedStock: prev + 1,
+              updatedStock: (updatedCat?.currentStock ?? prev + 1),
               difference: 1,
               action: 'STUDENT_DELETION',
               referenceType: 'Student',
               referenceId: id,
               updatedBy: req.user?.id
-            });
+            }], { session });
           }
         }
       }
     }
+    const feeResult = await StudentFee.deleteMany({ studentId: id }, { session });
+    deletedCounts.fees = feeResult.deletedCount;
 
-    await Invoice.deleteMany({ studentId: id });
-    await Payment.deleteMany({ studentId: id });
-    await StudentFee.deleteMany({ studentId: id });
-    await StudentIncludedCharge.deleteMany({ studentId: id });
-    await Student.findByIdAndDelete(id);
+    // 5. Included charge assignments + restore stock
+    const includedAssignments = await StudentIncludedCharge.find({ studentId: id }).session(session);
+    for (const assignment of includedAssignments) {
+      await adjustIncludedChargeStock(assignment.includedChargeId, 1, {
+        session,
+        performedById: req.user?.id,
+        reason: `Student ${id} deleted`,
+        referenceType: 'Student',
+        referenceId: id
+      });
+    }
+    const includedChargeResult = await StudentIncludedCharge.deleteMany({ studentId: id }, { session });
+    deletedCounts.includedCharges = includedChargeResult.deletedCount;
 
-    await ActivityLog.create({
+    // 6. Activity assignments
+    const activityResult = await StudentActivity.deleteMany({ studentId: id }, { session });
+    deletedCounts.activities = activityResult.deletedCount;
+
+    // 7. Academic enrollment history
+    const enrollmentResult = await StudentEnrollment.deleteMany({ studentId: id }, { session });
+    deletedCounts.enrollments = enrollmentResult.deletedCount;
+
+    // 8. Unlink the approved application (application itself is shared/historical data)
+    await Application.updateMany({ student: id }, { $set: { student: null } }, { session });
+
+    // 9. Delete the student profile; verify the delete to guard against duplicate requests
+    const deletedStudent = await Student.findByIdAndDelete(id, { session });
+    if (!deletedStudent) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ error: 'Student not found or already deleted.' });
+    }
+
+    // 10. Audit log
+    await ActivityLog.create([{
       userId: req.user.id,
       action: 'DELETED_STUDENT',
-      details: `Deleted student ${id} and all associated records`
-    });
+      details: `Permanently deleted student ${student.studentName} (${student.admissionNumber}) ${id}. Removed records: ${JSON.stringify(deletedCounts)}`
+    }], { session });
 
-    res.json({ message: 'Student deleted successfully' });
+    await session.commitTransaction();
+    committed = true;
+
+    // 11. Remove uploaded photo files after the DB transaction commits (best-effort)
+    deleteStudentPhotoFiles(student);
+
+    return res.json({
+      message: 'Student deleted successfully',
+      deleted: deletedCounts
+    });
   } catch (error) {
     console.error("Delete student error:", error);
-    res.status(500).json({ error: 'Error deleting student. Financial records might be preventing deletion.' });
+    if (!committed) {
+      await session.abortTransaction().catch(err => console.error("Failed to abort transaction", err));
+    }
+    return res.status(500).json({ error: 'Error deleting student. Financial records might be preventing deletion.' });
+  } finally {
+    session.endSession();
   }
 };
 
