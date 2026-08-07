@@ -115,30 +115,30 @@ const buildReceiptEntry = (source, fallbackAmount = 0) => {
   };
 };
 
-const groupFeeAllocationsForReceipt = (payment) => {
+const parsePaymentEntriesForReceipt = (payment) => {
   if (payment?.paymentType === 'APPLICATION') {
     return [{
-      name: 'Application Fee',
+      rawName: 'Application Fee',
       displayName: 'Application Fee',
-      terms: [],
       totalAmount: payment.amount,
       lessAmount: 0,
       discountAmount: 0,
       paidAmount: payment.amount,
-      balanceAmount: 0,
-      rows: []
+      balanceAmount: 0
     }];
   }
 
   const feeAllocations = Array.isArray(payment?.feeAllocations) ? payment.feeAllocations : [];
   const studentFee = payment?.studentFee || payment?.studentFeeId || null;
 
-  const entries = feeAllocations.length > 0
+  return feeAllocations.length > 0
     ? feeAllocations.map((allocation) => buildReceiptEntry(allocation))
     : studentFee
       ? [buildReceiptEntry(studentFee, payment?.amount)]
       : [];
+};
 
+const groupEntriesListForReceipt = (entries) => {
   const grouped = [];
   const groupedMap = new Map();
 
@@ -195,6 +195,24 @@ const groupFeeAllocationsForReceipt = (payment) => {
       sortIndex: group.sortIndex
     };
   });
+};
+
+const groupFeeAllocationsForReceipt = (payment) => {
+  if (payment?.paymentType === 'APPLICATION') {
+    return [{
+      name: 'Application Fee',
+      displayName: 'Application Fee',
+      terms: [],
+      totalAmount: payment.amount,
+      lessAmount: 0,
+      discountAmount: 0,
+      paidAmount: payment.amount,
+      balanceAmount: 0,
+      rows: []
+    }];
+  }
+
+  return groupEntriesListForReceipt(parsePaymentEntriesForReceipt(payment));
 };
 
 const calculateReceiptTotals = (groupedRows) =>
