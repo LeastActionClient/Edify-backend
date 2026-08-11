@@ -22,6 +22,9 @@ import {
 } from '../models/index.js';
 import { createStudentWithGeneratedAdmissionNumber } from '../services/studentAdmissionService.js';
 import { isDuplicateAdmissionNumberError, peekNextAdmissionNumber } from '../services/admissionNumberService.js';
+import { isCloudinaryConfigured, uploadToCloudinary } from '../config/cloudinary.js';
+import fs from 'fs';
+import path from 'path';
 
 export const assignClassDefaultFeesToStudent = async (student, session = null) => {
   try {
@@ -2319,11 +2322,41 @@ export const uploadStudentPhoto = async (req, res) => {
     if (!req.file) {
       return res.status(400).json({ error: 'No photo uploaded.' });
     }
-    const relativePath = `/uploads/photos/${req.file.filename}`;
+
+    let finalPhotoUrl = '';
+
+    if (isCloudinaryConfigured()) {
+      // Upload directly to Cloudinary
+      const cloudinaryResult = await uploadToCloudinary(req.file.buffer, 'student_photos');
+      finalPhotoUrl = cloudinaryResult.secure_url;
+    } else {
+      // Local disk fallback if Cloudinary env vars are missing
+      const uploadsDir = path.resolve('uploads/photos');
+      if (!fs.existsSync(uploadsDir)) {
+        fs.mkdirSync(uploadsDir, { recursive: true });
+      }
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      const ext = path.extname(req.file.originalname || '.jpg').toLowerCase();
+      const filename = `passport-${uniqueSuffix}${ext}`;
+      const filePath = path.join(uploadsDir, filename);
+
+      fs.writeFileSync(filePath, req.file.buffer);
+      finalPhotoUrl = `/uploads/photos/${filename}`;
+    }
+
+    // If studentId is passed in request, update MongoDB record immediately!
+    const targetStudentId = req.body.studentId || req.body.id || req.query.studentId || req.query.id;
+    if (targetStudentId && mongoose.Types.ObjectId.isValid(targetStudentId)) {
+      await Student.findByIdAndUpdate(targetStudentId, {
+        photoUrl: finalPhotoUrl,
+        passport_photo: finalPhotoUrl
+      });
+    }
+
     res.status(200).json({
       message: 'Photo uploaded successfully',
-      photoUrl: relativePath,
-      passport_photo: relativePath
+      photoUrl: finalPhotoUrl,
+      passport_photo: finalPhotoUrl
     });
   } catch (error) {
     console.error('Error uploading photo:', error);

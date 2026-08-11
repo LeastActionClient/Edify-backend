@@ -14,6 +14,7 @@ import exportRoutes from './exportRoutes.js';
 import academicYearRoutes from './academicYearRoutes.js';
 import concessionRoutes from './concessionRoutes.js';
 import idCardRoutes from './idCardRoutes.js';
+import teacherRoutes from './teacherRoutes.js';
 
 const router = Router();
 
@@ -32,6 +33,7 @@ router.use('/exports', exportRoutes);
 router.use('/academic-years', academicYearRoutes);
 router.use('/concessions', concessionRoutes);
 router.use('/id-cards', idCardRoutes);
+router.use('/teachers', teacherRoutes);
 
 
 
