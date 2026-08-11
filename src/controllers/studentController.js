@@ -25,8 +25,6 @@ import {
 import { createStudentWithGeneratedAdmissionNumber } from '../services/studentAdmissionService.js';
 import { isDuplicateAdmissionNumberError, peekNextAdmissionNumber } from '../services/admissionNumberService.js';
 import { isCloudinaryConfigured, uploadToCloudinary } from '../config/cloudinary.js';
-import fs from 'fs';
-import path from 'path';
 
 export const assignClassDefaultFeesToStudent = async (student, session = null) => {
   try {
