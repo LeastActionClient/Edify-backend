@@ -715,6 +715,47 @@ const validateAdmissionNumber = (admissionNumber) => {
   return null;
 };
 
+const saveStudentPhotoBuffer = async (fileBuffer, originalName = 'photo.jpg') => {
+  if (!fileBuffer) return '';
+
+  if (isCloudinaryConfigured()) {
+    const cloudinaryResult = await uploadToCloudinary(fileBuffer, 'student_photos');
+    return cloudinaryResult.secure_url;
+  }
+
+  const uploadsDir = path.resolve('uploads/photos');
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+
+  const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+  const ext = path.extname(originalName || '.jpg').toLowerCase() || '.jpg';
+  const filename = `student-${uniqueSuffix}${ext}`;
+  const filePath = path.join(uploadsDir, filename);
+
+  fs.writeFileSync(filePath, fileBuffer);
+  return `/uploads/photos/${filename}`;
+};
+
+const resolveStudentPhotoUrl = async ({ file, photoUrl, passportPhoto, fallback = '' } = {}) => {
+  if (file?.buffer) {
+    return saveStudentPhotoBuffer(file.buffer, file.originalname);
+  }
+
+  const candidate = (passportPhoto || photoUrl || fallback || '').trim();
+  if (!candidate) {
+    return '';
+  }
+
+  const inlineMatch = candidate.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/i);
+  if (inlineMatch?.[2] && isCloudinaryConfigured()) {
+    const buffer = Buffer.from(inlineMatch[2], 'base64');
+    return saveStudentPhotoBuffer(buffer, 'student-photo.png');
+  }
+
+  return candidate;
+};
+
 export const addStudentManually = async (req, res) => {
   const {
     admissionNumber,
@@ -773,6 +814,12 @@ export const addStudentManually = async (req, res) => {
   const session = await mongoose.startSession();
 
   try {
+    const resolvedPhotoUrl = await resolveStudentPhotoUrl({
+      file: req.file,
+      photoUrl: req.body.photoUrl,
+      passportPhoto: req.body.passport_photo
+    });
+
     session.startTransaction();
 
     const activeYear = await AcademicYear.findOne({ status: 'Active' }).session(session);
@@ -822,8 +869,8 @@ export const addStudentManually = async (req, res) => {
       whatsappNumber: (whatsappNumber || '').trim(),
       emisNumber: (emisNo || emisNumber || '').trim(),
       emisNo: (emisNo || emisNumber || '').trim(),
-      photoUrl: req.body.photoUrl || req.body.passport_photo || '',
-      passport_photo: req.body.passport_photo || req.body.photoUrl || '',
+      photoUrl: resolvedPhotoUrl,
+      passport_photo: resolvedPhotoUrl,
       currentClass,
       section,
       addedById: req.user?.id,
@@ -1576,6 +1623,13 @@ export const updateStudent = async (req, res) => {
       return res.status(404).json({ error: 'Student not found' });
     }
 
+    const resolvedPhotoUrl = await resolveStudentPhotoUrl({
+      file: req.file,
+      photoUrl,
+      passportPhoto: req.body.passport_photo,
+      fallback: currentStudent.passport_photo || currentStudent.photoUrl || ''
+    });
+
     const resolvedRTE = typeof isRTE === 'boolean'
       ? (isRTE ? 'RTE' : 'General')
       : (RTE || '');
@@ -2072,8 +2126,8 @@ export const updateStudent = async (req, res) => {
         emisNo: (emisNo !== undefined || emisNumber !== undefined ? (emisNo || emisNumber).trim() : (currentStudent.emisNo || currentStudent.emisNumber)) || '',
         city,
         state,
-        photoUrl: photoUrl || req.body.passport_photo || currentStudent.photoUrl,
-        passport_photo: req.body.passport_photo || photoUrl || currentStudent.passport_photo || currentStudent.photoUrl,
+        photoUrl: resolvedPhotoUrl || currentStudent.photoUrl || '',
+        passport_photo: resolvedPhotoUrl || currentStudent.passport_photo || currentStudent.photoUrl || '',
         RTE: resolvedRTE,
         dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
         admissionDate: admissionDate ? new Date(admissionDate) : null,
@@ -2426,26 +2480,7 @@ export const uploadStudentPhoto = async (req, res) => {
       return res.status(400).json({ error: 'No photo uploaded.' });
     }
 
-    let finalPhotoUrl = '';
-
-    if (isCloudinaryConfigured()) {
-      // Upload directly to Cloudinary
-      const cloudinaryResult = await uploadToCloudinary(req.file.buffer, 'student_photos');
-      finalPhotoUrl = cloudinaryResult.secure_url;
-    } else {
-      // Local disk fallback if Cloudinary env vars are missing
-      const uploadsDir = path.resolve('uploads/photos');
-      if (!fs.existsSync(uploadsDir)) {
-        fs.mkdirSync(uploadsDir, { recursive: true });
-      }
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-      const ext = path.extname(req.file.originalname || '.jpg').toLowerCase();
-      const filename = `passport-${uniqueSuffix}${ext}`;
-      const filePath = path.join(uploadsDir, filename);
-
-      fs.writeFileSync(filePath, req.file.buffer);
-      finalPhotoUrl = `/uploads/photos/${filename}`;
-    }
+    const finalPhotoUrl = await saveStudentPhotoBuffer(req.file.buffer, req.file.originalname);
 
     // If studentId is passed in request, update MongoDB record immediately!
     const targetStudentId = req.body.studentId || req.body.id || req.query.studentId || req.query.id;
@@ -2459,7 +2494,8 @@ export const uploadStudentPhoto = async (req, res) => {
     res.status(200).json({
       message: 'Photo uploaded successfully',
       photoUrl: finalPhotoUrl,
-      passport_photo: finalPhotoUrl
+      passport_photo: finalPhotoUrl,
+      imageUrl: finalPhotoUrl
     });
   } catch (error) {
     console.error('Error uploading photo:', error);

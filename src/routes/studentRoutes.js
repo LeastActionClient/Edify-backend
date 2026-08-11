@@ -14,10 +14,10 @@ router.post('/upload-photo', uploadPhoto.single('photo'), uploadStudentPhoto);
 router.get('/', getStudents);
 router.get('/next-admission-number', getNextAdmissionNumber);
 router.post('/promote', promoteStudents);
-router.post('/manual', addStudentManually);
+router.post('/manual', uploadPhoto.single('photo'), addStudentManually);
 router.post('/bulk-import', upload.single('file'), bulkImportStudents);
 router.get('/:id', getStudentById);
-router.put('/:id', updateStudent);
+router.put('/:id', uploadPhoto.single('photo'), updateStudent);
 router.delete('/:id', authorizeSuperAdmin, deleteStudent);
 router.delete('/:studentId/fees/:feeId', removeFeeFromStudent);
 
