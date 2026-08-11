@@ -5,6 +5,8 @@ import path from 'path';
 import fs from 'fs';
 import { logoBase64 } from '../utils/logoBase64.js';
 
+import { normalizeIndianMobile } from '../utils/phoneNumber.js';
+
 const EFFECTIVE_CONCESSION_STATUSES = new Set(['Active', 'Completed', 'Expired']);
 
 const generateInvoiceNumber = async () => {
@@ -1428,7 +1430,7 @@ const getInvoicePaymentData = async (id) => {
   const [paymentDoc, invoiceDoc] = await Promise.all([
     Payment.findById(id)
       .populate('studentId', 'studentName admissionNumber currentClass section academicYear studentStatus fatherPhone motherPhone whatsappNumber emisNo emisNumber guardianName guardian')
-      .populate('applicationId', 'studentName applicationId applyingClass status feePaid feeAmount feePaidDate')
+      .populate('applicationId', 'studentName applicationId applyingClass status feePaid feeAmount feePaidDate fatherPhone motherPhone guardianPhone')
       .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock topStock bottomStock' } })
       .populate({ path: 'feeAllocations.studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock topStock bottomStock' } })
       .populate('recordedById', 'username')
@@ -1912,8 +1914,8 @@ export const createPayment = async (req, res) => {
 export const getPaymentHistory = async (req, res) => {
   try {
     const payments = await Payment.find()
-      .populate('studentId', 'studentName admissionNumber currentClass section academicYear studentStatus')
-      .populate('applicationId', 'studentName applicationId applyingClass status')
+      .populate('studentId', 'studentName admissionNumber currentClass section academicYear studentStatus fatherPhone motherPhone whatsappNumber emisNo emisNumber guardianName guardian')
+      .populate('applicationId', 'studentName applicationId applyingClass status feePaid feeAmount feePaidDate fatherPhone motherPhone guardianPhone')
       .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock topStock bottomStock' } })
       .populate({ path: 'feeAllocations.studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock topStock bottomStock' } })
       .populate('recordedById', 'username')
@@ -1991,7 +1993,22 @@ export const generateInvoicePDF = async (req, res) => {
     }
 
     const { payment, invoice, summary } = invoiceContext;
-    const splitBills = getSplitBillsForReceipt(payment);
+    let splitBills = getSplitBillsForReceipt(payment);
+    
+    const requestedBill = req.query.bill;
+    if (requestedBill === 'first' && splitBills.length > 0) {
+      splitBills = [splitBills[0]];
+    } else if (requestedBill === 'academic') {
+      splitBills = splitBills.filter(b => b.id === 'academic');
+    } else if (requestedBill === 'additional') {
+      splitBills = splitBills.filter(b => b.id === 'additional');
+    }
+
+    if (splitBills.length === 0) {
+      // Fallback if filter excluded everything
+      splitBills = getSplitBillsForReceipt(payment);
+    }
+
     const { fullRemainingBalance } = summary;
 
     const doc = new PDFDocument({
@@ -2122,3 +2139,58 @@ export const deletePayment = async (req, res) => {
     res.status(500).json({ error: 'Error deleting payment' });
   }
 };
+
+export const sharePaymentWhatsApp = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const paymentDoc = await Payment.findById(id)
+      .populate('studentId')
+      .populate('applicationId')
+      .lean();
+
+    if (!paymentDoc) {
+      return res.status(404).json({ error: 'Payment not found' });
+    }
+
+    const student = paymentDoc.studentId || paymentDoc.applicationId || {};
+    const rawNumber = student.whatsappNumber || student.fatherPhone || student.motherPhone || student.guardianPhone || '';
+    
+    if (!rawNumber) {
+      return res.status(400).json({ error: 'Parent WhatsApp number is not available.' });
+    }
+    
+    const parsed = normalizeIndianMobile(rawNumber);
+    if (!parsed.ok) {
+       return res.status(400).json({ error: 'Invalid phone number format.' });
+    }
+
+    const name = student.studentName || 'Student';
+    const amount = paymentDoc.amount;
+    let backendUrl = process.env.API_URL || `${req.protocol}://${req.get('host')}`;
+    
+    // WhatsApp's link parser ignores "localhost". For local testing, we replace it with "lvh.me" 
+    // (a standard loopback domain that resolves to 127.0.0.1) so WhatsApp formats it as a clickable link.
+    if (backendUrl.includes('localhost')) {
+      backendUrl = backendUrl.replace('localhost', 'lvh.me');
+    }
+
+    const publicPdfUrl = `${backendUrl}/api/payments/public-invoice/${id}?download=inline&bill=first`;
+    const message = `Dear Parent, we have received a payment for ${name}. Thank you. - Kasthuri School\n\nYou can view and download your receipt here:\n${publicPdfUrl}`;
+    
+    const waLink = `https://wa.me/${parsed.number}?text=${encodeURIComponent(message)}`;
+    
+    res.json({
+      waLink,
+      pdfUrl: `/payments/invoice/${id}`,
+      message,
+      bill: {
+         receiptNumber: paymentDoc._id.toString()
+      }
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to prepare the WhatsApp bill.' });
+  }
+};
+
