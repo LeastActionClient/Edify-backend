@@ -1,4 +1,4 @@
-import { Student, Payment, StudentFee, FeeCategory, Application, StudentFeeConcession, Class, AcademicYear } from '../models/index.js';
+import { Student, Payment, StudentFee, FeeCategory, Application, StudentFeeConcession, Class, AcademicYear, Teacher } from '../models/index.js';
 
 const adjustFeesWithActiveConcessions = async (studentFees) => {
   if (!studentFees || studentFees.length === 0) return studentFees;
@@ -90,7 +90,11 @@ export const getDashboardOverview = async (req, res) => {
       applicationTotals,
       activeYear,
       classes,
-      academicYears
+      academicYears,
+      teachers,
+      feeCategories,
+      tuitionStudentIds,
+      abacusStudentIds
     ] = await Promise.all([
       Application.aggregate([
         {
@@ -135,7 +139,19 @@ export const getDashboardOverview = async (req, res) => {
       AcademicYear.find()
         .select('year status createdAt updatedAt')
         .sort({ year: -1 })
-        .lean()
+        .lean(),
+      Teacher.countDocuments({}),
+      FeeCategory.countDocuments({}),
+      (async () => {
+        const tuitionCategories = await FeeCategory.find({ name: { $regex: /tuition/i } }).select('_id').lean();
+        if (tuitionCategories.length === 0) return [];
+        return StudentFee.distinct('studentId', { feeCategoryId: { $in: tuitionCategories.map((c) => c._id) } });
+      })(),
+      (async () => {
+        const abacusCategories = await FeeCategory.find({ name: { $regex: /abacus/i } }).select('_id').lean();
+        if (abacusCategories.length === 0) return [];
+        return StudentFee.distinct('studentId', { feeCategoryId: { $in: abacusCategories.map((c) => c._id) } });
+      })()
     ]);
 
     const applicationTotalsDoc = applications[0] || { total: 0, pending: 0, approved: 0 };
@@ -151,7 +167,12 @@ export const getDashboardOverview = async (req, res) => {
         students: activeStudents,
         collections,
         RTEStudents: rteStudents,
-        generalStudents: Math.max(0, totalStudents - rteStudents)
+        generalStudents: Math.max(0, totalStudents - rteStudents),
+        teachers,
+        tuitionStudents: tuitionStudentIds.length,
+        abacusStudents: abacusStudentIds.length,
+        classesCount: classes.length,
+        feeCategories
       },
       activeYear,
       classes,
