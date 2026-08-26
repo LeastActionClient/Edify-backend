@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { Student, StudentFee, Payment, Invoice, FeeCategory, ActivityLog, StockHistory, StudentFeeConcession } from '../models/index.js';
+import { Student, StudentFee, Payment, Invoice, FeeCategory, ActivityLog, StockHistory, StudentFeeConcession, IncludedCharge, IncludedChargeStockTransaction, Class } from '../models/index.js';
 import PDFDocument from 'pdfkit';
 import path from 'path';
 import fs from 'fs';
@@ -93,7 +93,7 @@ const splitFeeName = (value) => {
 
 const buildReceiptEntry = (source, fallbackAmount = 0) => {
   const fee = source?.studentFeeId || source?.studentFee || source || {};
-  const feeName = fee.feeCategoryId?.name || fee.name || 'Fee';
+  const feeName = fee.feeCategoryId?.name || fee.includedChargeId?.name || fee.name || 'Fee';
   const totalAmount = toNumber(fee.totalAmount);
   const paidAmount = toNumber(source?.amount ?? fallbackAmount);
   const balanceAmount = toNumber(fee.remainingAmount);
@@ -248,9 +248,9 @@ const formatReceiptDate = (value) => {
 const RECEIPT_PAGE_WIDTH_MM = 105;
 const RECEIPT_PAGE_HEIGHT_MM = 148;
 const RECEIPT_MARGIN_MM = 5;
-const RECEIPT_INNER_PADDING_MM = 4;
+const RECEIPT_INNER_PADDING_MM = 2.5;
 const RECEIPT_FOOTER_HEIGHT_MM = 5.5;
-const RECEIPT_MAX_ROWS_PER_PAGE = 12;
+const RECEIPT_MAX_ROWS_PER_PAGE = 10;
 const RECEIPT_PAGE_GAP_MM = 1.8;
 const RECEIPT_SUMMARY_GAP_MM = 1.4;
 
@@ -269,13 +269,13 @@ const getReceiptLogoSource = () => {
   return fs.existsSync(logoPath) ? logoPath : Buffer.from(logoBase64, 'base64');
 };
 
-const drawReceiptField = (doc, { label, value, x, y, width, align = 'left', accent = false, valueFontSize = 7.5 }) => {
+const drawReceiptField = (doc, { label, value, x, y, width, align = 'left', accent = false, valueFontSize = 8.5 }) => {
   const labelText = `${label}`;
   const valueText = value || '-';
   const valueColor = accent ? RECEIPT_COLORS.orange : RECEIPT_COLORS.text;
-  const labelFontSize = 7.0;
+  const labelFontSize = 8.0;
   const gap = mmToPt(0.8);
-  const labelWidth = mmToPt(13.8);
+  const labelWidth = mmToPt(22.0);
   const colonWidth = doc.widthOfString(':');
   const valueWidth = Math.max(0, width - labelWidth - colonWidth - gap);
 
@@ -329,7 +329,7 @@ const drawReceiptHeader = ({ doc, innerX, innerY, innerWidth, payment, invoice }
   doc.save();
   doc.roundedRect(badgeX, innerY + mmToPt(1.0), badgeWidth, badgeHeight, mmToPt(4))
     .fillAndStroke(RECEIPT_COLORS.lightOrange, RECEIPT_COLORS.lightOrange);
-  doc.fillColor('#111111').font('Helvetica-Bold').fontSize(8.8)
+  doc.fillColor('#111111').font('Helvetica-Bold').fontSize(9.8)
     .text('FEE', badgeX, innerY + mmToPt(3.0), {
       width: badgeWidth,
       align: 'center',
@@ -343,7 +343,7 @@ const drawReceiptHeader = ({ doc, innerX, innerY, innerWidth, payment, invoice }
   doc.restore();
 
   const approvedY = innerY + badgeHeight + mmToPt(4.0);
-  doc.fillColor(RECEIPT_COLORS.muted).font('Helvetica').fontSize(8.9)
+  doc.fillColor(RECEIPT_COLORS.muted).font('Helvetica-Bold').fontSize(9.9)
     .text('Approved by Govt. of Tamilnadu - 2349', innerX, approvedY, {
       width: innerWidth,
       align: 'center',
@@ -376,7 +376,7 @@ const drawReceiptHeader = ({ doc, innerX, innerY, innerWidth, payment, invoice }
       x: innerX + leftColWidth + colGap,
       y: infoTop,
       width: rightColWidth,
-      align: 'right'
+      align: 'left'
     });
     drawReceiptField(doc, {
       label: 'S. Name',
@@ -392,7 +392,7 @@ const drawReceiptHeader = ({ doc, innerX, innerY, innerWidth, payment, invoice }
       x: innerX + leftColWidth + colGap,
       y: infoTop + lineGap,
       width: rightColWidth,
-      align: 'right'
+      align: 'left'
     });
     drawReceiptField(doc, {
       label: 'Date',
@@ -407,7 +407,7 @@ const drawReceiptHeader = ({ doc, innerX, innerY, innerWidth, payment, invoice }
       x: innerX + leftColWidth + colGap,
       y: infoTop + lineGap * 2,
       width: rightColWidth,
-      align: 'right'
+      align: 'left'
     });
   } else {
     drawReceiptField(doc, {
@@ -432,7 +432,7 @@ const drawReceiptHeader = ({ doc, innerX, innerY, innerWidth, payment, invoice }
       y: infoTop + lineGap - mmToPt(0.3) ,
       width: leftColWidth,
       accent: true,
-      valueFontSize: 6.5
+      valueFontSize: 7.5
     });
     drawReceiptField(doc, {
       label: 'Date',
@@ -486,9 +486,9 @@ const drawReceiptTable = ({ doc, innerX, innerWidth, topY, groupedRows, showLess
   const lessX = totalX + totalWidth;
   const paidX = lessX + lessWidth;
   const balanceX = paidX + paidWidth;
-  const amountFontSize = showLessAmount ? 7.0 : 7.4;
-  const lessAmountFontSize = showLessAmount ? 6.4 : amountFontSize;
-  const headerFontSize = showLessAmount ? 7.0 : 7.6;
+  const amountFontSize = showLessAmount ? 8.0 : 8.4;
+  const lessAmountFontSize = showLessAmount ? 7.4 : amountFontSize;
+  const headerFontSize = showLessAmount ? 8.0 : 8.6;
 
   doc.save();
   doc.roundedRect(innerX, topY, innerWidth, tableHeight, tableRadius)
@@ -534,7 +534,7 @@ const drawReceiptTable = ({ doc, innerX, innerWidth, topY, groupedRows, showLess
   let rowTop = topY + headerHeight;
 
   if (groupedRows.length === 0) {
-    doc.fillColor(RECEIPT_COLORS.darkGrey).font('Helvetica').fontSize(7.5)
+    doc.fillColor(RECEIPT_COLORS.darkGrey).font('Helvetica-Bold').fontSize(8.5)
       .text('No fee details available.', innerX, rowTop + mmToPt(2.0), {
         width: innerWidth,
         align: 'center'
@@ -637,7 +637,7 @@ const drawReceiptGrandTotal = ({ doc, innerX, innerWidth, topY, amount }) => {
   );
 
   // 3. GRAND TOTAL label - drawn after box so it stays visible
-  doc.fillColor(RECEIPT_COLORS.orange).font('Helvetica-Bold').fontSize(8.9)
+  doc.fillColor(RECEIPT_COLORS.orange).font('Helvetica-Bold').fontSize(9.9)
     .text('GRAND TOTAL', summaryX, topY - mmToPt(1.4), {
       width: summaryWidth,
       align: 'center',
@@ -649,7 +649,7 @@ const drawReceiptGrandTotal = ({ doc, innerX, innerWidth, topY, amount }) => {
 
   doc.fillColor(RECEIPT_COLORS.darkGrey)
     .font('Helvetica-Bold')
-    .fontSize(6.8)
+    .fontSize(7.8)
     .text('TOTAL AMOUNT', summaryX + mmToPt(2), rowY + mmToPt(0.8), {
       width: summaryWidth - mmToPt(4),
       align: 'left',
@@ -658,7 +658,7 @@ const drawReceiptGrandTotal = ({ doc, innerX, innerWidth, topY, amount }) => {
 
   doc.fillColor(RECEIPT_COLORS.text)
     .font('Helvetica-Bold')
-    .fontSize(8.8)
+    .fontSize(9.8)
     .text(`Rs.${formatReceiptMoney(amount)}`, summaryX + mmToPt(2), rowY, {
       width: summaryWidth - mmToPt(4),
       align: 'right',
@@ -721,7 +721,7 @@ const drawReceiptGrandTotal = ({ doc, innerX, innerWidth, topY, amount }) => {
 const drawReceiptFooter = ({ doc, x, y, width, height }) => {
   doc.save();
   doc.rect(x, y, width, height).fill(RECEIPT_COLORS.orange);
-  doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(7.2)
+  doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(8.2)
     .text('#15 & 44, Eda Street, Saidapet, Vellore - 632 012. Ph : 0416 - 2211877', x, y + mmToPt(1.5), {
       width,
       align: 'center',
@@ -1431,8 +1431,8 @@ const getInvoicePaymentData = async (id) => {
     Payment.findById(id)
       .populate('studentId', 'studentName admissionNumber currentClass section academicYear studentStatus fatherPhone motherPhone whatsappNumber emisNo emisNumber guardianName guardian')
       .populate('applicationId', 'studentName applicationId applyingClass status feePaid feeAmount feePaidDate fatherPhone motherPhone guardianPhone')
-      .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock topStock bottomStock' } })
-      .populate({ path: 'feeAllocations.studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock topStock bottomStock' } })
+      .populate({ path: 'studentFeeId', populate: [{ path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock topStock bottomStock' }, { path: 'includedChargeId', select: 'name amount stockQuantity status' }] })
+      .populate({ path: 'feeAllocations.studentFeeId', populate: [{ path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock topStock bottomStock' }, { path: 'includedChargeId', select: 'name amount stockQuantity status' }] })
       .populate('recordedById', 'username')
       .lean(),
     Invoice.findOne({ paymentId: id }).select('invoiceNumber paymentId studentId generatedDate createdAt updatedAt').lean()
@@ -1528,10 +1528,38 @@ export const createPayment = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const { studentId, studentFeeIds, amount, feeAllocations: clientAllocations, paymentMethod, referenceNumber, remarks } = req.body;
+    const { studentId, studentFeeIds, amount, feeAllocations: clientAllocations, paymentMethod, referenceNumber, remarks, otherFees } = req.body;
 
     let targetAllocations = [];
-    let resolvedFeeIds = studentFeeIds;
+    let resolvedFeeIds = studentFeeIds || [];
+
+    // Dynamically create StudentFee records for Other Fees
+    if (otherFees && Array.isArray(otherFees) && otherFees.length > 0) {
+      const student = await Student.findById(studentId).session(session);
+      for (const of of otherFees) {
+        if (!of.includedChargeId || !of.amount) continue;
+        const chargeDoc = await IncludedCharge.findById(of.includedChargeId).session(session);
+        const originalAmount = chargeDoc ? parseFloat(chargeDoc.amount || 0) : parseFloat(of.amount);
+        const amt = parseFloat(of.amount);
+        const [newFee] = await StudentFee.create([{
+          studentId,
+          includedChargeId: of.includedChargeId,
+          totalAmount: originalAmount,
+          remainingAmount: originalAmount,
+          paidAmount: 0,
+          className: student?.currentClass,
+          academicYear: student?.academicYear
+        }], { session });
+        
+        resolvedFeeIds.push(newFee._id.toString());
+        if (clientAllocations) {
+          clientAllocations.push({
+            studentFeeId: newFee._id.toString(),
+            amount: amt
+          });
+        }
+      }
+    }
 
     if (clientAllocations && Array.isArray(clientAllocations) && clientAllocations.length > 0) {
       targetAllocations = clientAllocations.map(a => ({
@@ -1821,9 +1849,40 @@ export const createPayment = async (req, res) => {
     // Deduct stock atomically and set inventoryProcessed flag
     for (const alloc of feeAllocations) {
       const studentFee = unpaidFees.find(f => f._id.toString() === alloc.studentFeeId.toString());
-      if (studentFee && studentFee.feeCategoryId) {
+      if (!studentFee || studentFee.isStockDeducted) continue;
+      
+      if (studentFee.includedChargeId) {
+        const charge = await IncludedCharge.findById(studentFee.includedChargeId).session(session);
+        if (charge) {
+          const updatedCharge = await IncludedCharge.findOneAndUpdate(
+            { _id: charge._id, stockQuantity: { $gte: 1 } },
+            { $inc: { stockQuantity: -1 } },
+            { new: true, session }
+          );
+
+          if (!updatedCharge) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(400).json({ error: `Insufficient stock for ${charge.name}.` });
+          }
+
+          await IncludedChargeStockTransaction.create([{
+            includedChargeId: charge._id,
+            type: 'OUT',
+            quantity: 1,
+            previousStock: charge.stockQuantity,
+            newStock: updatedCharge.stockQuantity,
+            reason: 'Payment collected',
+            referenceType: 'Payment',
+            referenceId: payment._id,
+            recordedById: req.user?.id || req.user?._id || req.user?.userId || null
+          }], { session });
+
+          await StudentFee.findByIdAndUpdate(studentFee._id, { isStockDeducted: true }, { session });
+        }
+      } else if (studentFee.feeCategoryId) {
         const cat = await FeeCategory.findById(studentFee.feeCategoryId).session(session);
-        if (cat && cat.isStockItem && !studentFee.isStockDeducted) {
+        if (cat && cat.isStockItem) {
           if (cat.name.toLowerCase() === 'uniform') {
             const topLen = parseFloat(studentFee.uniformDetails?.topLength || 0);
             const bottomLen = parseFloat(studentFee.uniformDetails?.bottomLength || 0);
@@ -1916,8 +1975,8 @@ export const getPaymentHistory = async (req, res) => {
     const payments = await Payment.find()
       .populate('studentId', 'studentName admissionNumber currentClass section academicYear studentStatus fatherPhone motherPhone whatsappNumber emisNo emisNumber guardianName guardian')
       .populate('applicationId', 'studentName applicationId applyingClass status feePaid feeAmount feePaidDate fatherPhone motherPhone guardianPhone')
-      .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock topStock bottomStock' } })
-      .populate({ path: 'feeAllocations.studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock topStock bottomStock' } })
+      .populate({ path: 'studentFeeId', populate: [{ path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock topStock bottomStock' }, { path: 'includedChargeId', select: 'name amount stockQuantity status' }] })
+      .populate({ path: 'feeAllocations.studentFeeId', populate: [{ path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock topStock bottomStock' }, { path: 'includedChargeId', select: 'name amount stockQuantity status' }] })
       .populate('recordedById', 'username')
       .sort({ paymentDate: -1 })
       .lean();
@@ -2095,7 +2154,34 @@ export const deletePayment = async (req, res) => {
 
       for (const feeId of allocatedFeeIds) {
         const studentFee = await StudentFee.findById(feeId);
-        if (studentFee && studentFee.feeCategoryId) {
+        if (!studentFee || !studentFee.isStockDeducted) continue;
+        
+        if (studentFee.includedChargeId) {
+          const charge = await IncludedCharge.findById(studentFee.includedChargeId);
+          if (charge) {
+            const updatedCharge = await IncludedCharge.findOneAndUpdate(
+              { _id: charge._id },
+              { $inc: { stockQuantity: 1 } },
+              { new: true }
+            );
+
+            if (updatedCharge) {
+              await IncludedChargeStockTransaction.create({
+                includedChargeId: charge._id,
+                type: 'IN',
+                quantity: 1,
+                previousStock: charge.stockQuantity,
+                newStock: updatedCharge.stockQuantity,
+                reason: 'Payment deleted',
+                referenceType: 'Payment',
+                referenceId: payment._id,
+                recordedById: req.user?.id || req.user?._id || req.user?.userId || null
+              });
+
+              await StudentFee.findByIdAndUpdate(studentFee._id, { isStockDeducted: false });
+            }
+          }
+        } else if (studentFee.feeCategoryId) {
           const cat = await FeeCategory.findById(studentFee.feeCategoryId);
           if (cat && cat.isStockItem) {
             if (cat.name.toLowerCase() === 'uniform') {

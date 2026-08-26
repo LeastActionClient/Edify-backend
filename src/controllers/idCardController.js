@@ -78,7 +78,10 @@ export const getIdCards = async (req, res) => {
         photoUrl: photo,
         passport_photo: photo,
         address: s.address || '',
-        phone: s.fatherPhone || s.motherPhone || s.whatsappNumber || ''
+        phone: s.fatherPhone || s.motherPhone || s.whatsappNumber || '',
+        fatherPhone: s.fatherPhone || '',
+        motherPhone: s.motherPhone || '',
+        whatsappNumber: s.whatsappNumber || ''
       };
     });
 
@@ -112,7 +115,10 @@ export const getIdCardByStudentId = async (req, res) => {
       photoUrl: photo,
       passport_photo: photo,
       address: student.address || '',
-      phone: student.fatherPhone || student.motherPhone || student.whatsappNumber || ''
+      phone: student.fatherPhone || student.motherPhone || student.whatsappNumber || '',
+      fatherPhone: student.fatherPhone || '',
+      motherPhone: student.motherPhone || '',
+      whatsappNumber: student.whatsappNumber || ''
     });
   } catch (error) {
     console.error('Error fetching student ID card details:', error);
@@ -140,7 +146,10 @@ export const generateIdCards = async (req, res) => {
         photoUrl: photo,
         passport_photo: photo,
         address: s.address || '',
-        phone: s.fatherPhone || s.motherPhone || s.whatsappNumber || ''
+        phone: s.fatherPhone || s.motherPhone || s.whatsappNumber || '',
+        fatherPhone: s.fatherPhone || '',
+        motherPhone: s.motherPhone || '',
+        whatsappNumber: s.whatsappNumber || ''
       };
     });
 

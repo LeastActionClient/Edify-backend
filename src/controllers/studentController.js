@@ -130,8 +130,8 @@ export const getStudents = async (req, res) => {
     const studentIds = students.map(s => s._id);
     const [studentFees, concessions, payments, enrollments] = await Promise.all([
       StudentFee.find({ studentId: { $in: studentIds } })
-        .select('studentId feeCategoryId totalAmount paidAmount remainingAmount academicYear className uniformDetails isStockDeducted createdAt updatedAt')
-        .populate('feeCategoryId', 'name amount mandatory pricing isStockItem currentStock topStock bottomStock')
+        .select('studentId feeCategoryId includedChargeId totalAmount paidAmount remainingAmount academicYear className uniformDetails isStockDeducted createdAt updatedAt')
+        .populate('feeCategoryId', 'name amount mandatory pricing isStockItem currentStock topStock bottomStock').populate('includedChargeId', 'name amount stockQuantity status')
         .lean(),
       StudentFeeConcession.find({
         studentId: { $in: studentIds },
@@ -170,7 +170,7 @@ export const getStudents = async (req, res) => {
     const feeMap = {};
     studentFees.forEach(fee => {
       const concession = concessionMap.get(fee._id.toString());
-      fee.feeCategory = fee.feeCategoryId; // Map populated field for frontend
+      fee.feeCategory = fee.feeCategoryId || fee.includedChargeId; // Map populated field for frontend
       
       if (concession) {
         fee.lessAmount = concession.lessAmount;
@@ -297,8 +297,8 @@ export const getStudentById = async (req, res) => {
 
     const [studentFeesRaw, concessions, payments, includedCharges, activities] = await Promise.all([
       StudentFee.find({ studentId: id })
-        .select('studentId feeCategoryId totalAmount paidAmount remainingAmount academicYear className uniformDetails isStockDeducted createdAt updatedAt')
-        .populate('feeCategoryId', 'name amount mandatory pricing isStockItem currentStock topStock bottomStock')
+        .select('studentId feeCategoryId includedChargeId totalAmount paidAmount remainingAmount academicYear className uniformDetails isStockDeducted createdAt updatedAt')
+        .populate('feeCategoryId', 'name amount mandatory pricing isStockItem currentStock topStock bottomStock').populate('includedChargeId', 'name amount stockQuantity status')
         .lean(),
       StudentFeeConcession.find({
         studentId: id,
@@ -387,7 +387,7 @@ export const getStudentById = async (req, res) => {
     const studentFees = studentFeesRaw.map(fee => {
       const fObj = { ...fee };
       const concession = concessionMap.get(fObj._id.toString());
-      fObj.feeCategory = fObj.feeCategoryId;
+      fObj.feeCategory = fObj.feeCategoryId || fObj.includedChargeId;
       
       if (concession) {
         fObj.lessAmount = concession.lessAmount;
