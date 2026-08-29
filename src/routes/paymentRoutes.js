@@ -1,11 +1,12 @@
 import { Router } from 'express';
-import { createPayment, getPaymentHistory, generateInvoicePDF, getPaymentInvoiceData, deletePayment, sharePaymentWhatsApp } from '../controllers/paymentController.js';
+import { createPayment, getPaymentHistory, generateInvoicePDF, getPaymentInvoiceData, deletePayment, sharePaymentWhatsApp, renderFrontendPdf } from '../controllers/paymentController.js';
 import { authenticate } from '../middlewares/authMiddleware.js';
 
 const router = Router();
 
 // Public route so parents can download their receipt directly
 router.get('/public-invoice/:id', generateInvoicePDF);
+router.post('/:id/render-pdf', renderFrontendPdf);
 
 router.use(authenticate);
 

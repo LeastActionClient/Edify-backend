@@ -2038,12 +2038,13 @@ export const getPaymentHistory = async (req, res) => {
   }
 };
 
+
+
 export const generateInvoicePDF = async (req, res) => {
   try {
     const { id } = req.params;
     const downloadMode = String(req.query.download ?? 'true').toLowerCase();
     const shouldDownload = !['false', '0', 'no', 'inline'].includes(downloadMode);
-
     const invoiceContext = await getInvoicePaymentData(id);
 
     if (!invoiceContext) {
@@ -2051,7 +2052,25 @@ export const generateInvoicePDF = async (req, res) => {
       return;
     }
 
-    const { payment, invoice, summary } = invoiceContext;
+    const { payment, invoice } = invoiceContext;
+    const safeInvoiceNumber = String(invoice.invoiceNumber || payment._id || 'invoice').replace(/[^a-zA-Z0-9._-]/g, '_');
+    const safePaymentId = String(payment._id || Date.now()).replace(/[^a-zA-Z0-9._-]/g, '_');
+    const dispositionType = shouldDownload ? 'attachment' : 'inline';
+    
+    // Check if we have a saved frontend-generated PDF
+    const savedPdfPath = path.join(process.cwd(), 'uploads', 'invoices', `${id}.pdf`);
+    if (fs.existsSync(savedPdfPath)) {
+      const stat = fs.statSync(savedPdfPath);
+      res.setHeader('Content-Length', stat.size);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `${dispositionType}; filename=invoice_${safeInvoiceNumber}_${safePaymentId}.pdf`);
+      
+      const readStream = fs.createReadStream(savedPdfPath);
+      readStream.pipe(res);
+      return;
+    }
+
+    const { summary } = invoiceContext;
     let splitBills = getSplitBillsForReceipt(payment);
     
     const requestedBill = req.query.bill;
@@ -2076,9 +2095,6 @@ export const generateInvoicePDF = async (req, res) => {
     });
 
     res.setHeader('Content-Type', 'application/pdf');
-    const safeInvoiceNumber = String(invoice.invoiceNumber || payment._id || 'invoice').replace(/[^a-zA-Z0-9._-]/g, '_');
-    const safePaymentId = String(payment._id || Date.now()).replace(/[^a-zA-Z0-9._-]/g, '_');
-    const dispositionType = shouldDownload ? 'attachment' : 'inline';
     res.setHeader('Content-Disposition', `${dispositionType}; filename=invoice_${safeInvoiceNumber}_${safePaymentId}.pdf`);
 
     doc.pipe(res);
@@ -2226,6 +2242,47 @@ export const deletePayment = async (req, res) => {
   }
 };
 
+export const renderFrontendPdf = async (req, res) => {
+  try {
+    const { html } = req.body;
+    const { id } = req.params;
+    
+    let puppeteer;
+    try {
+      const puppeteerModule = await import('puppeteer');
+      puppeteer = puppeteerModule.default || puppeteerModule;
+    } catch (e) {
+      return res.status(500).json({ error: 'Puppeteer is not installed on the server.', details: e.message });
+    }
+
+    const browser = await puppeteer.launch({ 
+      headless: 'new',
+      args: ['--no-sandbox', '--disable-setuid-sandbox'] 
+    });
+    const page = await browser.newPage();
+    
+    const baseUrl = process.env.API_URL ? process.env.API_URL.replace('/api', '') : 'http://localhost:5173';
+    let processedHtml = html.replace(/"\/KSlogo\.jpg"/g, `"${baseUrl}/KSlogo.jpg"`);
+    
+    await page.setContent(processedHtml, { waitUntil: 'networkidle0' });
+    await page.evaluateHandle('document.fonts.ready');
+    const pdfBuffer = await page.pdf({ 
+      printBackground: true, 
+      width: '105mm',
+      height: '148mm',
+      margin: { top: 0, bottom: 0, left: 0, right: 0 } 
+    });
+    
+    await browser.close();
+    
+    res.setHeader('Content-Type', 'application/pdf');
+    res.send(pdfBuffer);
+  } catch (err) {
+    console.error('Error rendering frontend PDF', err);
+    res.status(500).json({ error: 'Failed to render PDF', details: err.message });
+  }
+};
+
 export const sharePaymentWhatsApp = async (req, res) => {
   try {
     const { id } = req.params;
@@ -2258,6 +2315,42 @@ export const sharePaymentWhatsApp = async (req, res) => {
     // (a standard loopback domain that resolves to 127.0.0.1) so WhatsApp formats it as a clickable link.
     if (backendUrl.includes('localhost')) {
       backendUrl = backendUrl.replace('localhost', 'lvh.me');
+    }
+
+    if (req.body.html) {
+      try {
+        let puppeteer;
+        try { 
+          const puppeteerModule = await import('puppeteer'); 
+          puppeteer = puppeteerModule.default || puppeteerModule;
+        } catch(e) {}
+        if (puppeteer) {
+          const browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+          const page = await browser.newPage();
+          const baseUrl = process.env.API_URL ? process.env.API_URL.replace('/api', '') : 'http://localhost:5173';
+          let processedHtml = req.body.html.replace(/"\/KSlogo\.jpg"/g, `"${baseUrl}/KSlogo.jpg"`);
+          await page.setContent(processedHtml, { waitUntil: 'networkidle0' });
+          await page.evaluateHandle('document.fonts.ready');
+          const pdfBuffer = await page.pdf({ 
+            printBackground: true, 
+            width: '105mm',
+            height: '148mm',
+            margin: { top: 0, bottom: 0, left: 0, right: 0 } 
+          });
+          await browser.close();
+          
+          const fs = await import('fs');
+          const path = await import('path');
+          const invoicesDir = path.join(process.cwd(), 'uploads', 'invoices');
+          if (!fs.existsSync(invoicesDir)) {
+            fs.mkdirSync(invoicesDir, { recursive: true });
+          }
+          const savedPdfPath = path.join(invoicesDir, `${id}.pdf`);
+          fs.writeFileSync(savedPdfPath, pdfBuffer);
+        }
+      } catch (err) {
+        console.error('Error saving frontend PDF for WhatsApp via Puppeteer', err);
+      }
     }
 
     const publicPdfUrl = `${backendUrl}/api/payments/public-invoice/${id}?download=inline&bill=first`;
