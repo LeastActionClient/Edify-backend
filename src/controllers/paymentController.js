@@ -275,7 +275,7 @@ const drawReceiptField = (doc, { label, value, x, y, width, align = 'left', acce
   const valueColor = accent ? RECEIPT_COLORS.orange : RECEIPT_COLORS.text;
   const labelFontSize = 8.0;
   const gap = mmToPt(0.8);
-  const labelWidth = mmToPt(22.0);
+  const labelWidth = mmToPt(15.5);
   const colonWidth = doc.widthOfString(':');
   const valueWidth = Math.max(0, width - labelWidth - colonWidth - gap);
 
@@ -356,7 +356,7 @@ const drawReceiptHeader = ({ doc, innerX, innerY, innerWidth, payment, invoice }
 
   const infoTop = dividerY + mmToPt(2.0);
   const colGap = mmToPt(4.0);
-  const leftColWidth = mmToPt(44.0);
+  const leftColWidth = (innerWidth - colGap) * 0.58;
   const rightColWidth = innerWidth - leftColWidth - colGap;
   const lineGap = mmToPt(5.0);
   const itemHeight = mmToPt(4.2);
@@ -371,7 +371,7 @@ const drawReceiptHeader = ({ doc, innerX, innerY, innerWidth, payment, invoice }
       accent: true
     });
     drawReceiptField(doc, {
-      label: 'Receipt No',
+      label: 'Rec.No',
       value: payment.invoice?.invoiceNumber || payment._id?.toString?.() || '-',
       x: innerX + leftColWidth + colGap,
       y: infoTop,
@@ -402,7 +402,7 @@ const drawReceiptHeader = ({ doc, innerX, innerY, innerWidth, payment, invoice }
       width: leftColWidth
     });
     drawReceiptField(doc, {
-      label: 'Payment Mode',
+      label: 'Pay Mode',
       value: String(paymentModeValue || '-').toUpperCase(),
       x: innerX + leftColWidth + colGap,
       y: infoTop + lineGap * 2,
@@ -418,7 +418,7 @@ const drawReceiptHeader = ({ doc, innerX, innerY, innerWidth, payment, invoice }
       width: leftColWidth
     });
     drawReceiptField(doc, {
-      label: 'Receipt No',
+      label: 'Rec.No',
       value: payment.invoice?.invoiceNumber || payment._id?.toString?.() || '-',
       x: innerX + leftColWidth + colGap,
       y: infoTop,
@@ -452,7 +452,7 @@ const drawReceiptHeader = ({ doc, innerX, innerY, innerWidth, payment, invoice }
       width: leftColWidth
     });
     drawReceiptField(doc, {
-      label: 'Payment Mode',
+      label: 'Pay Mode',
       value: String(paymentModeValue || '-').toUpperCase(),
       x: innerX + leftColWidth + colGap,
       y: infoTop + lineGap * 2,
@@ -911,7 +911,7 @@ const getReceiptInfoGroups = (payment, invoice) => {
     ? [
         [
           { label: 'Application No', value: application.applicationId || '-', accent: true },
-          { label: 'Receipt No', value: receiptNumberValue, align: 'right' }
+          { label: 'Rec.No', value: receiptNumberValue, align: 'right' }
         ],
         [
           { label: 'Applicant Name', value: application.studentName || '-', valueColor: RECEIPT_COLORS.text, valueFontSize: 7.4 },
@@ -919,13 +919,13 @@ const getReceiptInfoGroups = (payment, invoice) => {
         ],
         [
           { label: 'Date', value: formatReceiptDate(receiptDateValue) },
-          { label: 'Payment Mode', value: paymentModeValue, align: 'right' }
+          { label: 'Pay Mode', value: paymentModeValue, align: 'right' }
         ]
       ]
     : [
         [
           { label: 'Ad. No', value: student.admissionNumber || '-' },
-          { label: 'Receipt No', value: receiptNumberValue, align: 'right' }
+          { label: 'Rec.No', value: receiptNumberValue, align: 'right' }
         ],
         [
           { label: 'S. Name', value: student.studentName || '-', valueColor: RECEIPT_COLORS.text, valueFontSize: 7.4 },
@@ -933,7 +933,7 @@ const getReceiptInfoGroups = (payment, invoice) => {
         ],
         [
           { label: 'Class & Sec', value: classValue },
-          { label: 'Payment Mode', value: paymentModeValue, align: 'right' }
+          { label: 'Pay Mode', value: paymentModeValue, align: 'right' }
         ]
       ];
 };
@@ -941,7 +941,7 @@ const getReceiptInfoGroups = (payment, invoice) => {
 const measureReceiptFieldBlock = (doc, field, width) => {
   const labelFontSize = 7.0;
   const valueFontSize = field.valueFontSize || (field.compact ? 6.9 : 7.35);
-  const labelWidth = mmToPt(18.5);
+  const labelWidth = mmToPt(15.5);
   const gap = mmToPt(0.8);
   const colonWidth = doc.widthOfString(':');
   const valueWidth = Math.max(0, width - labelWidth - colonWidth - gap);
@@ -1000,8 +1000,8 @@ const drawReceiptFieldBlock = (doc, field, x, y, width) => {
 
 const measureReceiptHeaderHeight = (doc, { payment, invoice, innerWidth }) => {
   const groups = getReceiptInfoGroups(payment, invoice);
-  const leftColWidth = mmToPt(40.8);
   const colGap = mmToPt(4.0);
+  const leftColWidth = (innerWidth - colGap) * 0.58;
   const rightColWidth = innerWidth - leftColWidth - colGap;
   const infoTop = mmToPt(18.6) + mmToPt(2.0);
   const rowGap = mmToPt(1.2);
@@ -1069,7 +1069,7 @@ const drawReceiptHeaderV2 = ({ doc, innerX, innerY, innerWidth, payment, invoice
 
   const infoTop = dividerY + mmToPt(2.0);
   const colGap = mmToPt(4.0);
-  const leftColWidth = mmToPt(40.8);
+  const leftColWidth = (innerWidth - colGap) * 0.58;
   const rightColWidth = innerWidth - leftColWidth - colGap;
   const rowGap = mmToPt(1.2);
   const groups = getReceiptInfoGroups(payment, invoice);
