@@ -29,8 +29,8 @@ const adjustFeesWithActiveConcessions = async (studentFees) => {
 const withPaymentDetails = (query) =>
   query
     .populate('studentId', 'studentName admissionNumber currentClass section academicYear studentStatus')
-    .populate({ path: 'studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock topStock bottomStock' } })
-    .populate({ path: 'feeAllocations.studentFeeId', populate: { path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock topStock bottomStock' } })
+    .populate({ path: 'studentFeeId', populate: [{ path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock topStock bottomStock' }, { path: 'includedChargeId', select: 'name amount' }] })
+    .populate({ path: 'feeAllocations.studentFeeId', populate: [{ path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock topStock bottomStock' }, { path: 'includedChargeId', select: 'name amount' }] })
     .populate('recordedById', 'username');
 
 const withApplicationDetails = (query) =>
