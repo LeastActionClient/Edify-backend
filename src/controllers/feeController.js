@@ -441,11 +441,13 @@ export const assignBulkFee = async (req, res) => {
 
       for (const fee of currentFees) {
         finalFeesById.set(fee._id.toString(), { ...fee });
-        const catIdStr = fee.feeCategoryId.toString();
-        if (!feesByCategory.has(catIdStr)) {
-          feesByCategory.set(catIdStr, []);
+        if (fee.feeCategoryId) {
+          const catIdStr = fee.feeCategoryId.toString();
+          if (!feesByCategory.has(catIdStr)) {
+            feesByCategory.set(catIdStr, []);
+          }
+          feesByCategory.get(catIdStr).push(fee);
         }
-        feesByCategory.get(catIdStr).push(fee);
       }
 
       const queueDeleteFee = (feeId) => {
@@ -529,16 +531,21 @@ export const assignBulkFee = async (req, res) => {
       }
 
       for (const existing of currentFees) {
-        const catIdStr = existing.feeCategoryId.toString();
-        if (!assignedCatIds.has(catIdStr) && (existing.paidAmount || 0) === 0) {
-          queueDeleteFee(existing._id);
+        if (existing.feeCategoryId) {
+          const catIdStr = existing.feeCategoryId.toString();
+          if (!assignedCatIds.has(catIdStr) && (existing.paidAmount || 0) === 0) {
+            queueDeleteFee(existing._id);
+          }
         }
       }
 
       const finalFees = Array.from(finalFeesById.values());
       const baseFeeTotal = finalFees.reduce((sum, fee) => {
-        const cat = validCatMap.get(fee.feeCategoryId.toString());
-        return cat?.mandatory ? sum + (fee.totalAmount || 0) : sum;
+        if (fee.feeCategoryId) {
+          const cat = validCatMap.get(fee.feeCategoryId.toString());
+          return cat?.mandatory ? sum + (fee.totalAmount || 0) : sum;
+        }
+        return sum;
       }, 0);
       const grandTotal = finalFees.reduce((sum, fee) => sum + (fee.totalAmount || 0), 0)
         + (student.includedChargesTotal || 0)
@@ -783,7 +790,7 @@ export const getRTEStudents = async (req, res) => {
       const sId = f.studentId.toString();
       if (!feesMap.has(sId)) feesMap.set(sId, []);
       feesMap.get(sId).push({
-        feeCategoryId: f.feeCategoryId.toString(),
+        feeCategoryId: f.feeCategoryId ? f.feeCategoryId.toString() : null,
         totalAmount: f.totalAmount,
         remainingAmount: f.remainingAmount,
         paidAmount: f.paidAmount
