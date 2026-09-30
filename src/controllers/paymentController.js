@@ -255,17 +255,17 @@ const RECEIPT_PAGE_GAP_MM = 1.8;
 const RECEIPT_SUMMARY_GAP_MM = 1.4;
 
 const RECEIPT_COLORS = {
-  orange: '#F58220',
-  lightOrange: '#FDE9D9',
+  orange: '#013e8b',
+  lightOrange: '#E0F2FE',
   darkGrey: '#555555',
   border: '#ECECEC',
-  alternateRow: '#FFF8F2',
-  text: '#2F2F2F',
+  alternateRow: '#F0F9FF',
+  text: '#111111',
   muted: '#8A8A8A'
 };
 
 const getReceiptLogoSource = () => {
-  const logoPath = path.resolve(process.cwd(), 'public', 'KSlogo.jpg');
+  const logoPath = path.resolve(process.cwd(), 'public', 'logo.png');
   return fs.existsSync(logoPath) ? logoPath : Buffer.from(logoBase64, 'base64');
 };
 
@@ -308,8 +308,8 @@ const drawReceiptHeader = ({ doc, innerX, innerY, innerWidth, payment, invoice }
   const student = payment.studentId || payment.student || {};
   const application = payment.applicationId || payment.application || {};
   const isApplication = payment.paymentType === 'APPLICATION';
-  const logoWidth = mmToPt(70);
-  const logoHeight = mmToPt(14);
+  const logoWidth = mmToPt(14.5);
+  const logoHeight = mmToPt(14.5);
   const badgeWidth = mmToPt(20.5);
   const badgeHeight = mmToPt(10.5);
   const badgeX = innerX + innerWidth - badgeWidth;
@@ -325,6 +325,19 @@ const drawReceiptHeader = ({ doc, innerX, innerY, innerWidth, payment, invoice }
   } catch (imageError) {
     console.error('Error loading receipt logo', imageError);
   }
+
+  const textStartX = innerX + logoWidth + mmToPt(1);
+  doc.fillColor('#013e8b').font('Helvetica-Bold').fontSize(14)
+    .text('LOTUS', textStartX, innerY + mmToPt(0), { lineBreak: false });
+  doc.fillColor('#b89531').font('Helvetica-Bold').fontSize(9)
+    .text('Nursery & Primary School', textStartX, innerY + mmToPt(4.5), { lineBreak: false });
+    
+  doc.moveTo(textStartX, innerY + mmToPt(8.5))
+    .lineTo(badgeX - mmToPt(1), innerY + mmToPt(8.5))
+    .lineWidth(0.5).strokeColor('#00a2e8').stroke();
+
+  doc.fillColor('#00a2e8').font('Helvetica-Bold').fontSize(6.5)
+    .text('#20/16, Mariyamman Koil St, Kagithapattarai, Vellore.', textStartX, innerY + mmToPt(9.5), { lineBreak: false });
 
   doc.save();
   doc.roundedRect(badgeX, innerY + mmToPt(1.0), badgeWidth, badgeHeight, mmToPt(4))
@@ -722,7 +735,7 @@ const drawReceiptFooter = ({ doc, x, y, width, height }) => {
   doc.save();
   doc.rect(x, y, width, height).fill(RECEIPT_COLORS.orange);
   doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(8.2)
-    .text('#15 & 44, Eda Street, Saidapet, Vellore - 632 012. Ph : 0416 - 2211877', x, y + mmToPt(1.5), {
+    .text('#20/16, Mariyamman Koil St, Kagithapattarai, Vellore.', x, y + mmToPt(1.5), {
       width,
       align: 'center',
       lineBreak: false,
@@ -1016,8 +1029,8 @@ const measureReceiptHeaderHeight = (doc, { payment, invoice, innerWidth }) => {
 };
 
 const drawReceiptHeaderV2 = ({ doc, innerX, innerY, innerWidth, payment, invoice, headerTitle }) => {
-  const logoWidth = mmToPt(70);
-  const logoHeight = mmToPt(14);
+  const logoWidth = mmToPt(14.5);
+  const logoHeight = mmToPt(14.5);
   const line1 = headerTitle?.line1 || 'FEE';
   const line2 = headerTitle?.line2 || 'RECEIPT';
 
@@ -1038,6 +1051,19 @@ const drawReceiptHeaderV2 = ({ doc, innerX, innerY, innerWidth, payment, invoice
   } catch (imageError) {
     console.error('Error loading receipt logo', imageError);
   }
+
+  const textStartX = innerX + logoWidth + mmToPt(1);
+  doc.fillColor('#013e8b').font('Helvetica-Bold').fontSize(14)
+    .text('LOTUS', textStartX, innerY + mmToPt(0), { lineBreak: false });
+  doc.fillColor('#b89531').font('Helvetica-Bold').fontSize(9)
+    .text('Nursery & Primary School', textStartX, innerY + mmToPt(4.5), { lineBreak: false });
+    
+  doc.moveTo(textStartX, innerY + mmToPt(8.5))
+    .lineTo(badgeX - mmToPt(1), innerY + mmToPt(8.5))
+    .lineWidth(0.5).strokeColor('#00a2e8').stroke();
+
+  doc.fillColor('#00a2e8').font('Helvetica-Bold').fontSize(6.5)
+    .text('#20/16, Mariyamman Koil St, Kagithapattarai, Vellore.', textStartX, innerY + mmToPt(9.5), { lineBreak: false });
 
   doc.save();
   doc.roundedRect(badgeX, innerY + mmToPt(1.0), badgeWidth, badgeHeight, mmToPt(4))
@@ -1377,9 +1403,10 @@ const drawReceiptPdfDocument = ({
   pages.forEach((rows, pageIndex) => {
     if (!isFirstPageInDoc || pageIndex > 0) {
       doc.addPage({
-        size: [mmToPt(RECEIPT_PAGE_WIDTH_MM), mmToPt(RECEIPT_PAGE_HEIGHT_MM)],
+        size: [mmToPt(RECEIPT_PAGE_WIDTH_MM * 2), mmToPt(RECEIPT_PAGE_HEIGHT_MM * 2)],
         margin: 0
       });
+      doc.scale(2);
     }
 
     doc.save();
@@ -2090,9 +2117,11 @@ export const generateInvoicePDF = async (req, res) => {
     const { fullRemainingBalance } = summary;
 
     const doc = new PDFDocument({
-      size: [mmToPt(RECEIPT_PAGE_WIDTH_MM), mmToPt(RECEIPT_PAGE_HEIGHT_MM)],
+      size: [mmToPt(RECEIPT_PAGE_WIDTH_MM * 2), mmToPt(RECEIPT_PAGE_HEIGHT_MM * 2)],
       margins: 0
     });
+    
+    doc.scale(2);
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `${dispositionType}; filename=invoice_${safeInvoiceNumber}_${safePaymentId}.pdf`);
@@ -2354,7 +2383,7 @@ export const sharePaymentWhatsApp = async (req, res) => {
     }
 
     const publicPdfUrl = `${backendUrl}/api/payments/public-invoice/${id}?download=inline&bill=first`;
-    const message = `Dear Parent, we have received a payment for ${name}. Thank you. - Kasthuri School\n\nYou can view and download your receipt here:\n${publicPdfUrl}`;
+    const message = `Dear Parent, we have received a payment for ${name}. Thank you. - Lotus Nursery and Primary School\n\nYou can view and download your receipt here:\n${publicPdfUrl}`;
     
     const waLink = `https://wa.me/${parsed.number}?text=${encodeURIComponent(message)}`;
     
