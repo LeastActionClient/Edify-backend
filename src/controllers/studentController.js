@@ -2126,6 +2126,7 @@ export const updateStudent = async (req, res) => {
         emisNo: (emisNo !== undefined || emisNumber !== undefined ? (emisNo || emisNumber).trim() : (currentStudent.emisNo || currentStudent.emisNumber)) || '',
         city,
         state,
+        pincode: pincode !== undefined ? pincode : currentStudent.pincode,
         photoUrl: resolvedPhotoUrl || currentStudent.photoUrl || '',
         passport_photo: resolvedPhotoUrl || currentStudent.passport_photo || currentStudent.photoUrl || '',
         RTE: resolvedRTE,
