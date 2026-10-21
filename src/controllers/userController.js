@@ -4,8 +4,16 @@ import { User, ActivityLog, Student, Application, Payment } from '../models/inde
 export const createAdmin = async (req, res) => {
   try {
     const { username, password, role } = req.body;
-    
-    const existing = await User.findOne({ username });
+    const trimmedUsername = String(username || '').trim();
+
+    if (!trimmedUsername || !password) {
+      res.status(400).json({ error: 'Username and password are required' });
+      return;
+    }
+
+    const existing = await User.findOne({
+      username: { $regex: new RegExp(`^${trimmedUsername.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }
+    });
     if (existing) {
       res.status(400).json({ error: 'Username already exists' });
       return;
@@ -13,7 +21,7 @@ export const createAdmin = async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const user = await User.create({
-      username,
+      username: trimmedUsername,
       password: hashedPassword,
       role: role || 'ADMIN'
     });
@@ -21,12 +29,17 @@ export const createAdmin = async (req, res) => {
     await ActivityLog.create({
       userId: req.user.id,
       action: 'CREATED_ADMIN',
-      details: `Admin ${username} created`
-    });
+      details: `Admin ${trimmedUsername} created`
+    }).catch((logErr) => console.error('Failed to log admin creation:', logErr));
 
-    res.status(201).json({ message: 'Admin created successfully', user: { id: user.id, username } });
+    res.status(201).json({ message: 'Admin created successfully', user: { id: user.id, username: trimmedUsername } });
   } catch (error) {
-    res.status(500).json({ error: 'Error creating admin' });
+    console.error('Error creating admin:', error);
+    if (error.code === 11000) {
+      res.status(400).json({ error: 'Username already exists' });
+      return;
+    }
+    res.status(500).json({ error: error.message || 'Error creating admin' });
   }
 };
 
@@ -36,21 +49,30 @@ export const updateAdmin = async (req, res) => {
     const { username, password, isActive } = req.body;
 
     const dataToUpdate = {};
-    if (username) dataToUpdate.username = username;
+    if (username) dataToUpdate.username = String(username).trim();
     if (password) dataToUpdate.password = await bcrypt.hash(password, 10);
     if (isActive !== undefined) dataToUpdate.isActive = isActive;
 
     const user = await User.findByIdAndUpdate(id, dataToUpdate, { new: true });
+    if (!user) {
+      res.status(404).json({ error: 'Admin not found' });
+      return;
+    }
 
     await ActivityLog.create({
       userId: req.user.id,
       action: 'UPDATED_ADMIN',
       details: `Admin ${user.username} updated`
-    });
+    }).catch((logErr) => console.error('Failed to log admin update:', logErr));
 
     res.json({ message: 'Admin updated successfully' });
   } catch (error) {
-    res.status(500).json({ error: 'Error updating admin' });
+    console.error('Error updating admin:', error);
+    if (error.code === 11000) {
+      res.status(400).json({ error: 'Username already exists' });
+      return;
+    }
+    res.status(500).json({ error: error.message || 'Error updating admin' });
   }
 };
 
@@ -78,11 +100,13 @@ export const getAdmins = async (req, res) => {
 
     const adminsWithLogin = admins.map((admin) => ({
       ...admin,
+      username: admin.username || admin.name || 'Admin',
       lastLogin: lastLoginByUser.get(admin._id.toString()) || null
     }));
 
     res.json(adminsWithLogin);
   } catch (error) {
+    console.error('Error fetching admins:', error);
     res.status(500).json({ error: 'Error fetching admins' });
   }
 };

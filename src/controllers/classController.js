@@ -1,4 +1,5 @@
 import { Class, Section, Student, ActivityLog } from '../models/index.js';
+import { compareClassNames } from '../utils/classOrder.js';
 
 export const getClasses = async (req, res) => {
   try {
@@ -21,29 +22,10 @@ export const getClasses = async (req, res) => {
       sectionsByClass[key].push(s);
     });
 
-    const classSortFn = (a, b) => {
-      const preSchoolOrder = { 'pre-kg': 1, 'lkg': 2, 'ukg': 3 };
-      const aNorm = String(a).trim().toLowerCase();
-      const bNorm = String(b).trim().toLowerCase();
-      const isPreA = preSchoolOrder[aNorm];
-      const isPreB = preSchoolOrder[bNorm];
-      if (isPreA && isPreB) return isPreA - isPreB;
-      if (isPreA) return -1;
-      if (isPreB) return 1;
-      const numA = parseInt(aNorm, 10);
-      const numB = parseInt(bNorm, 10);
-      const isNumA = !isNaN(numA);
-      const isNumB = !isNaN(numB);
-      if (isNumA && isNumB) return numA - numB;
-      if (isNumA) return 1;
-      if (isNumB) return -1;
-      return aNorm.localeCompare(bNorm);
-    };
-
     const sortedClasses = classes.map((c) => ({
       ...c,
       sections: sectionsByClass[c._id.toString()] || []
-    })).sort((x, y) => classSortFn(x.name, y.name));
+    })).sort((x, y) => compareClassNames(x.name, y.name));
 
     res.json(sortedClasses);
   } catch (error) {
