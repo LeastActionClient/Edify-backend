@@ -2127,8 +2127,8 @@ export const updateStudent = async (req, res) => {
         city,
         state,
         pincode: pincode !== undefined ? pincode : currentStudent.pincode,
-        photoUrl: resolvedPhotoUrl || currentStudent.photoUrl || '',
-        passport_photo: resolvedPhotoUrl || currentStudent.passport_photo || currentStudent.photoUrl || '',
+        photoUrl: resolvedPhotoUrl !== undefined ? resolvedPhotoUrl : (currentStudent.photoUrl || ''),
+        passport_photo: resolvedPhotoUrl !== undefined ? resolvedPhotoUrl : (currentStudent.passport_photo || currentStudent.photoUrl || ''),
         RTE: resolvedRTE,
         dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
         admissionDate: admissionDate ? new Date(admissionDate) : null,
@@ -2138,14 +2138,37 @@ export const updateStudent = async (req, res) => {
         grandTotal: resolvedGrandTotal
       }, { new: true, session });
 
-      if (student.currentClass && student.academicYear) {
-        await StudentEnrollment.findOneAndUpdate(
-          { studentId: id, academicYear: student.academicYear, status: 'Active' },
-          { className: student.currentClass, sectionName: student.section || '' },
+
+      if (currentClassName && currentClassName !== currentStudent.currentClass) {
+        await StudentFee.updateMany(
+          { studentId: id, academicYear: currentAcademicYear },
+          { className: currentClassName },
           { session }
         );
       }
 
+      if (student.currentClass && student.academicYear) {
+        const existingEnrollment = await StudentEnrollment.findOne({
+          studentId: id,
+          academicYear: student.academicYear
+        }).session(session);
+
+        if (existingEnrollment) {
+          existingEnrollment.className = student.currentClass;
+          existingEnrollment.sectionName = student.section || '';
+          if (studentStatus) existingEnrollment.status = studentStatus === 'Active' ? 'Active' : studentStatus;
+          await existingEnrollment.save({ session });
+        } else {
+          await StudentEnrollment.create([{
+            studentId: id,
+            academicYear: student.academicYear,
+            className: student.currentClass,
+            sectionName: student.section || '',
+            status: studentStatus || 'Active',
+            joinedDate: student.admissionDate || new Date()
+          }], { session });
+        }
+      }
       if (req.user) {
         await ActivityLog.create([{
           userId: req.user.id,
