@@ -203,48 +203,56 @@ export const getStudents = async (req, res) => {
         return f.className === s.currentClass || (!f.className && !f.academicYear);
       });
 
-      const previousClassFees = allFees.filter(f => {
-        const hasRemaining = (f.remainingAmount || 0) > 0;
+      const allPreviousClassFees = allFees.filter(f => {
         const isPreviousYear = f.academicYear && s.academicYear && f.academicYear !== s.academicYear;
         const isPreviousClass = f.className && s.currentClass && f.className !== s.currentClass;
-        return hasRemaining && (isPreviousYear || isPreviousClass) && !currentClassFees.includes(f);
+        return (isPreviousYear || isPreviousClass) && !currentClassFees.includes(f);
       });
 
-      // Calculations according to strict financial business rules
-      const joinedDate = activeEnrollment ? new Date(activeEnrollment.joinedDate || activeEnrollment.createdAt) : null;
+      const previousClassFees = allPreviousClassFees.filter(f => (f.remainingAmount || 0) > 0);
+
       const studentPayments = paymentMap.get(s._id.toString()) || [];
-      
-      const currentYearPayments = joinedDate
-        ? studentPayments.filter(p => new Date(p.paymentDate || p.createdAt) >= joinedDate)
-        : studentPayments;
-
-      // Payments collected against previous academic year dues during the current year
-      let previousPaidThisYear = 0;
-      const previousFeeIdsSet = new Set(previousClassFees.map(f => f._id.toString()));
-      currentYearPayments.forEach(p => {
-        (p.feeAllocations || []).forEach(alloc => {
-          if (previousFeeIdsSet.has(alloc.studentFeeId?.toString())) {
-            previousPaidThisYear += (alloc.amount || 0);
-          }
-        });
-      });
-
-      // Payments collected against current academic year dues during the current year
-      let currentPaidThisYear = 0;
       const currentFeeIdsSet = new Set(currentClassFees.map(f => f._id.toString()));
-      currentYearPayments.forEach(p => {
-        (p.feeAllocations || []).forEach(alloc => {
-          if (currentFeeIdsSet.has(alloc.studentFeeId?.toString())) {
-            currentPaidThisYear += (alloc.amount || 0);
+      const previousFeeIdsSet = new Set(allPreviousClassFees.map(f => f._id.toString()));
+
+      let currentPaidFromPayments = 0;
+      let previousPaidFromPayments = 0;
+      studentPayments.forEach(p => {
+        if (Array.isArray(p.feeAllocations) && p.feeAllocations.length > 0) {
+          p.feeAllocations.forEach(alloc => {
+            const allocId = alloc.studentFeeId?.toString();
+            if (currentFeeIdsSet.has(allocId)) {
+              currentPaidFromPayments += (alloc.amount || 0);
+            } else if (previousFeeIdsSet.has(allocId)) {
+              previousPaidFromPayments += (alloc.amount || 0);
+            }
+          });
+        } else if (p.studentFeeId) {
+          const feeId = p.studentFeeId.toString();
+          if (currentFeeIdsSet.has(feeId)) {
+            currentPaidFromPayments += (p.amount || 0);
+          } else if (previousFeeIdsSet.has(feeId)) {
+            previousPaidFromPayments += (p.amount || 0);
           }
-        });
+        }
       });
+
+      const currentPaidFromFees = currentClassFees.reduce((sum, f) => sum + (f.paidAmount || 0), 0);
+      const previousPaidFromFees = allPreviousClassFees.reduce((sum, f) => sum + (f.paidAmount || 0), 0);
+
+      let currentPaid = Math.max(currentPaidFromFees, currentPaidFromPayments);
+      let previousPaid = Math.max(previousPaidFromFees, previousPaidFromPayments);
+
+      const totalPaymentsAmount = studentPayments.reduce((sum, p) => sum + (p.amount || 0), 0);
+      if (allPreviousClassFees.length === 0 && totalPaymentsAmount > currentPaid) {
+        currentPaid = totalPaymentsAmount;
+      }
 
       const previousPending = previousClassFees.reduce((sum, f) => sum + (f.remainingAmount || 0), 0);
       const currentPending = currentClassFees.reduce((sum, f) => sum + (f.remainingAmount || 0), 0);
       const totalDue = previousPending + currentPending;
 
-      const previousPendingAtPromotion = previousPending + previousPaidThisYear;
+      const previousPendingAtPromotion = previousPending + previousPaid;
       const currentYearNetFee = currentClassFees.reduce((sum, f) => {
         const concessionAmount = f.concessionStatus === 'Active' ? (f.lessAmount || 0) : 0;
         return sum + Math.max(0, (f.totalAmount || 0) - concessionAmount);
@@ -271,8 +279,8 @@ export const getStudents = async (req, res) => {
         currentPending,
         totalDue,
         totalFee,
-        previousPaid: previousPaidThisYear,
-        currentPaid: currentPaidThisYear
+        previousPaid,
+        currentPaid
       };
     });
 
@@ -415,47 +423,55 @@ export const getStudentById = async (req, res) => {
       return f.className === student.currentClass || (!f.className && !f.academicYear);
     });
 
-    const previousClassFees = studentFees.filter(f => {
-      const hasRemaining = (f.remainingAmount || 0) > 0;
+    const allPreviousClassFees = studentFees.filter(f => {
       const isPreviousYear = f.academicYear && student.academicYear && f.academicYear !== student.academicYear;
       const isPreviousClass = f.className && student.currentClass && f.className !== student.currentClass;
-      return hasRemaining && (isPreviousYear || isPreviousClass) && !currentClassFees.includes(f);
+      return (isPreviousYear || isPreviousClass) && !currentClassFees.includes(f);
     });
 
-    // Calculations according to strict financial business rules
-    const joinedDate = activeEnrollment ? new Date(activeEnrollment.joinedDate || activeEnrollment.createdAt) : null;
-    
-    const currentYearPayments = joinedDate
-      ? payments.filter(p => new Date(p.paymentDate || p.createdAt) >= joinedDate)
-      : payments;
+    const previousClassFees = allPreviousClassFees.filter(f => (f.remainingAmount || 0) > 0);
 
-    // Payments collected against previous academic year dues during the current year
-    let previousPaidThisYear = 0;
-    const previousFeeIdsSet = new Set(previousClassFees.map(f => f._id.toString()));
-    currentYearPayments.forEach(p => {
-      (p.feeAllocations || []).forEach(alloc => {
-        if (previousFeeIdsSet.has(alloc.studentFeeId?.toString())) {
-          previousPaidThisYear += (alloc.amount || 0);
-        }
-      });
-    });
-
-    // Payments collected against current academic year dues during the current year
-    let currentPaidThisYear = 0;
     const currentFeeIdsSet = new Set(currentClassFees.map(f => f._id.toString()));
-    currentYearPayments.forEach(p => {
-      (p.feeAllocations || []).forEach(alloc => {
-        if (currentFeeIdsSet.has(alloc.studentFeeId?.toString())) {
-          currentPaidThisYear += (alloc.amount || 0);
+    const previousFeeIdsSet = new Set(allPreviousClassFees.map(f => f._id.toString()));
+
+    let currentPaidFromPayments = 0;
+    let previousPaidFromPayments = 0;
+    payments.forEach(p => {
+      if (Array.isArray(p.feeAllocations) && p.feeAllocations.length > 0) {
+        p.feeAllocations.forEach(alloc => {
+          const allocId = alloc.studentFeeId?.toString();
+          if (currentFeeIdsSet.has(allocId)) {
+            currentPaidFromPayments += (alloc.amount || 0);
+          } else if (previousFeeIdsSet.has(allocId)) {
+            previousPaidFromPayments += (alloc.amount || 0);
+          }
+        });
+      } else if (p.studentFeeId) {
+        const feeId = p.studentFeeId.toString();
+        if (currentFeeIdsSet.has(feeId)) {
+          currentPaidFromPayments += (p.amount || 0);
+        } else if (previousFeeIdsSet.has(feeId)) {
+          previousPaidFromPayments += (p.amount || 0);
         }
-      });
+      }
     });
+
+    const currentPaidFromFees = currentClassFees.reduce((sum, f) => sum + (f.paidAmount || 0), 0);
+    const previousPaidFromFees = allPreviousClassFees.reduce((sum, f) => sum + (f.paidAmount || 0), 0);
+
+    let currentPaid = Math.max(currentPaidFromFees, currentPaidFromPayments);
+    let previousPaid = Math.max(previousPaidFromFees, previousPaidFromPayments);
+
+    const totalPaymentsAmount = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
+    if (allPreviousClassFees.length === 0 && totalPaymentsAmount > currentPaid) {
+      currentPaid = totalPaymentsAmount;
+    }
 
     const previousPending = previousClassFees.reduce((sum, f) => sum + (f.remainingAmount || 0), 0);
     const currentPending = currentClassFees.reduce((sum, f) => sum + (f.remainingAmount || 0), 0);
     const totalDue = previousPending + currentPending;
 
-    const previousPendingAtPromotion = previousPending + previousPaidThisYear;
+    const previousPendingAtPromotion = previousPending + previousPaid;
     const currentYearNetFee = currentClassFees.reduce((sum, f) => {
       const concessionAmount = f.concessionStatus === 'Active' ? (f.lessAmount || 0) : 0;
       return sum + Math.max(0, (f.totalAmount || 0) - concessionAmount);
@@ -485,8 +501,8 @@ export const getStudentById = async (req, res) => {
       currentPending,
       totalDue,
       totalFee,
-      previousPaid: previousPaidThisYear,
-      currentPaid: currentPaidThisYear
+      previousPaid,
+      currentPaid
     });
   } catch (error) {
     res.status(500).json({ error: 'Error fetching student details' });

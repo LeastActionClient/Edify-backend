@@ -1506,12 +1506,13 @@ const drawReceiptPdfDocument = ({
 const getInvoicePaymentData = async (id) => {
   const [paymentDoc, invoiceDoc] = await Promise.all([
     Payment.findById(id)
-      .populate('studentId', 'studentName admissionNumber currentClass section academicYear studentStatus fatherPhone motherPhone whatsappNumber emisNo emisNumber guardianName guardian')
+      .populate('studentId', 'studentName admissionNumber currentClass section academicYear studentStatus fatherPhone motherPhone whatsappNumber emisNo emisNumber guardianName guardian RTE isRTE')
       .populate('applicationId', 'studentName applicationId applyingClass status feePaid feeAmount feePaidDate fatherPhone motherPhone guardianPhone')
       .populate({ path: 'studentFeeId', populate: [{ path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock topStock bottomStock' }, { path: 'includedChargeId', select: 'name amount stockQuantity status' }] })
       .populate({ path: 'feeAllocations.studentFeeId', populate: [{ path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock topStock bottomStock' }, { path: 'includedChargeId', select: 'name amount stockQuantity status' }] })
       .populate('recordedById', 'username')
       .lean(),
+
     Invoice.findOne({ paymentId: id }).select('invoiceNumber paymentId studentId generatedDate createdAt updatedAt').lean()
   ]);
 
@@ -1538,6 +1539,8 @@ const getInvoicePaymentData = async (id) => {
   payment.invoice = invoice;
 
   if (payment.studentId) {
+    const rteVal = `${payment.studentId.RTE || ''}`.trim().toLowerCase();
+    payment.studentId.isRTE = payment.studentId.isRTE === true || ['rte', 'yes', 'true', '1'].includes(rteVal);
     payment.student = payment.studentId;
   }
 
@@ -2066,7 +2069,7 @@ export const createPayment = async (req, res) => {
 export const getPaymentHistory = async (req, res) => {
   try {
     const payments = await Payment.find()
-      .populate('studentId', 'studentName admissionNumber currentClass section academicYear studentStatus fatherPhone motherPhone whatsappNumber emisNo emisNumber guardianName guardian')
+      .populate('studentId', 'studentName admissionNumber currentClass section academicYear studentStatus fatherPhone motherPhone whatsappNumber emisNo emisNumber guardianName guardian RTE isRTE')
       .populate('applicationId', 'studentName applicationId applyingClass status feePaid feeAmount feePaidDate fatherPhone motherPhone guardianPhone')
       .populate({ path: 'studentFeeId', populate: [{ path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock topStock bottomStock' }, { path: 'includedChargeId', select: 'name amount stockQuantity status' }] })
       .populate({ path: 'feeAllocations.studentFeeId', populate: [{ path: 'feeCategoryId', select: 'name amount pricing mandatory isStockItem currentStock topStock bottomStock' }, { path: 'includedChargeId', select: 'name amount stockQuantity status' }] })
@@ -2098,6 +2101,8 @@ export const getPaymentHistory = async (req, res) => {
       const pObj = { ...p };
       pObj.invoice = invoiceMap[p._id.toString()] || null;
       if (pObj.studentId) {
+        const rteVal = `${pObj.studentId.RTE || ''}`.trim().toLowerCase();
+        pObj.studentId.isRTE = pObj.studentId.isRTE === true || ['rte', 'yes', 'true', '1'].includes(rteVal);
         pObj.student = pObj.studentId;
       }
       if (pObj.applicationId) {
