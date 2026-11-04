@@ -2473,3 +2473,279 @@ export const sharePaymentWhatsApp = async (req, res) => {
   }
 };
 
+
+
+export const getStudentPaymentHistory = async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    const requestedYear = req.query.academicYear ? String(req.query.academicYear).trim() : null;
+
+    if (!mongoose.Types.ObjectId.isValid(studentId)) {
+      return res.status(400).json({ error: 'Invalid student ID' });
+    }
+
+    const student = await Student.findById(studentId)
+      .select('studentName admissionNumber currentClass section academicYear studentStatus fatherName fatherPhone photoUrl passport_photo')
+      .lean();
+
+    if (!student) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
+    const targetYear = requestedYear || student.academicYear;
+
+    // 1. Fetch assigned fees for this student in targetYear
+    const feeFilter = { studentId };
+    if (targetYear) {
+      feeFilter.academicYear = targetYear;
+    }
+
+    const [studentFees, concessions, payments] = await Promise.all([
+      StudentFee.find(feeFilter)
+        .populate('feeCategoryId', 'name amount mandatory pricing isStockItem')
+        .populate('includedChargeId', 'name amount stockQuantity status')
+        .sort({ createdAt: 1 })
+        .lean(),
+      StudentFeeConcession.find({
+        studentId,
+        status: { $in: ['Active', 'Completed', 'Expired'] },
+        ...(targetYear ? { academicYear: targetYear } : {})
+      }).lean(),
+      Payment.find({
+        studentId,
+        status: { $nin: ['CANCELLED', 'FAILED', 'REVERSED'] }
+      })
+        .populate('recordedById', 'username')
+        .populate({
+          path: 'feeAllocations.studentFeeId',
+          populate: [
+            { path: 'feeCategoryId', select: 'name amount' },
+            { path: 'includedChargeId', select: 'name amount' }
+          ]
+        })
+        .populate({
+          path: 'studentFeeId',
+          populate: [
+            { path: 'feeCategoryId', select: 'name amount' },
+            { path: 'includedChargeId', select: 'name amount' }
+          ]
+        })
+        .sort({ paymentDate: -1, createdAt: -1 })
+        .lean()
+    ]);
+
+    // 2. Fetch invoice numbers
+    const paymentIds = payments.map((p) => p._id);
+    const invoices = paymentIds.length > 0
+      ? await Invoice.find({ paymentId: { $in: paymentIds } }).select('invoiceNumber paymentId generatedDate').lean()
+      : [];
+    const invoiceMap = new Map();
+    invoices.forEach((inv) => {
+      invoiceMap.set(inv.paymentId.toString(), inv);
+    });
+
+    // 3. Map concessions by studentFeeId
+    const concessionMap = new Map();
+    concessions.forEach((c) => {
+      concessionMap.set(c.studentFeeId.toString(), c);
+    });
+
+    // 4. Track payments and allocations for targetYear
+    const paidPerStudentFee = new Map();
+    const paymentHistoryRows = [];
+
+    const extractTermInfo = (categoryName) => {
+      const name = String(categoryName || '').trim();
+      const match = name.match(/term\s*(\d+)/i) || name.match(/\bt(\d+)\b/i) || name.match(/(\d+)(?:st|nd|rd|th)?\s*term/i);
+      if (!match) {
+        return { isTerm: false, term: '-', categoryName: name };
+      }
+      const termNum = match[1];
+      let baseCategory = name.replace(match[0], '').replace(/[-_()\s]+/g, ' ').trim();
+      if (!baseCategory) {
+        baseCategory = 'Tuition Fee';
+      }
+      return { isTerm: true, term: 'Term ' + termNum, categoryName: baseCategory };
+    };
+
+    for (const payment of payments) {
+      const inv = invoiceMap.get(payment._id.toString());
+      const receiptNumber = inv?.invoiceNumber || payment.referenceNumber || 'N/A';
+      const paymentDate = payment.paymentDate || payment.createdAt;
+      const paymentMode = payment.paymentMethod || 'CASH';
+      const collectedBy = payment.recordedById?.username || 'Admin';
+
+      if (Array.isArray(payment.feeAllocations) && payment.feeAllocations.length > 0) {
+        for (const alloc of payment.feeAllocations) {
+          const sf = alloc.studentFeeId;
+          if (!sf) continue;
+
+          // Only include if fee belongs to targetYear (do not combine payments from different academic years)
+          if (targetYear && sf.academicYear && sf.academicYear !== targetYear) {
+            continue;
+          }
+
+          const sfIdStr = sf._id.toString();
+          const allocAmount = Number(alloc.amount || 0);
+          paidPerStudentFee.set(sfIdStr, (paidPerStudentFee.get(sfIdStr) || 0) + allocAmount);
+
+          const rawCatName = sf.feeCategoryId?.name || sf.includedChargeId?.name || 'Fee';
+          const termInfo = extractTermInfo(rawCatName);
+
+          paymentHistoryRows.push({
+            id: payment._id + '_' + (alloc._id || sf._id),
+            paymentId: payment._id,
+            invoiceId: inv?._id || null,
+            paymentDate,
+            receiptNumber,
+            feeCategory: rawCatName,
+            term: termInfo.isTerm ? termInfo.term : '-',
+            amountPaid: allocAmount,
+            paymentMode,
+            collectedBy,
+            status: payment.status || 'PAID',
+            remarks: payment.remarks || ''
+          });
+        }
+      } else if (payment.studentFeeId) {
+        const sf = payment.studentFeeId;
+        if (!targetYear || !sf.academicYear || sf.academicYear === targetYear) {
+          const sfIdStr = sf._id.toString();
+          const pAmount = Number(payment.amount || 0);
+          paidPerStudentFee.set(sfIdStr, (paidPerStudentFee.get(sfIdStr) || 0) + pAmount);
+
+          const rawCatName = sf.feeCategoryId?.name || sf.includedChargeId?.name || 'Fee';
+          const termInfo = extractTermInfo(rawCatName);
+
+          paymentHistoryRows.push({
+            id: payment._id.toString(),
+            paymentId: payment._id,
+            invoiceId: inv?._id || null,
+            paymentDate,
+            receiptNumber,
+            feeCategory: rawCatName,
+            term: termInfo.isTerm ? termInfo.term : '-',
+            amountPaid: pAmount,
+            paymentMode,
+            collectedBy,
+            status: payment.status || 'PAID',
+            remarks: payment.remarks || ''
+          });
+        }
+      } else {
+        // Unallocated payment (general or application fee)
+        if (!targetYear || student.academicYear === targetYear) {
+          const pAmount = Number(payment.amount || 0);
+          paymentHistoryRows.push({
+            id: payment._id.toString(),
+            paymentId: payment._id,
+            invoiceId: inv?._id || null,
+            paymentDate,
+            receiptNumber,
+            feeCategory: payment.remarks || 'General Fee',
+            term: '-',
+            amountPaid: pAmount,
+            paymentMode,
+            collectedBy,
+            status: payment.status || 'PAID',
+            remarks: payment.remarks || ''
+          });
+        }
+      }
+    }
+
+    // 5. Build Remaining Fees by Category
+    const categoryBalances = studentFees.map((fee) => {
+      const feeIdStr = fee._id.toString();
+      const rawCategoryName = fee.feeCategoryId?.name || fee.includedChargeId?.name || 'Fee';
+      const originalFee = Number(fee.totalAmount || 0);
+
+      const concession = concessionMap.get(feeIdStr);
+      const concessionAmount = concession ? Number(concession.lessAmount || 0) : 0;
+      const totalAssignedFee = Math.max(0, originalFee - concessionAmount);
+
+      const totalPaid = paidPerStudentFee.get(feeIdStr) || Number(fee.paidAmount || 0);
+
+      let status = 'Pending';
+      let remainingAmount = 0;
+      let overpaidAmount = 0;
+
+      if (totalPaid > totalAssignedFee) {
+        status = 'Overpaid';
+        remainingAmount = 0;
+        overpaidAmount = totalPaid - totalAssignedFee;
+      } else if (totalAssignedFee > 0 && totalPaid === totalAssignedFee) {
+        status = 'Paid';
+        remainingAmount = 0;
+      } else if (totalPaid > 0 && totalPaid < totalAssignedFee) {
+        status = 'Partial';
+        remainingAmount = totalAssignedFee - totalPaid;
+      } else {
+        status = 'Pending';
+        remainingAmount = totalAssignedFee;
+      }
+
+      const termInfo = extractTermInfo(rawCategoryName);
+
+      return {
+        studentFeeId: fee._id,
+        feeCategory: rawCategoryName,
+        term: termInfo.isTerm ? termInfo.term : '-',
+        originalAmount: originalFee,
+        concessionAmount,
+        totalAssignedFee,
+        totalPaid,
+        remainingAmount,
+        status,
+        overpaidAmount
+      };
+    });
+
+    const totalAssignedFees = categoryBalances.reduce((sum, c) => sum + c.totalAssignedFee, 0);
+    const totalAmountPaid = paymentHistoryRows.reduce((sum, p) => sum + p.amountPaid, 0);
+    const sumCategoryPaid = categoryBalances.reduce((sum, c) => sum + c.totalPaid, 0);
+
+    // If there is any unallocated payment, reflect it in categoryBalances so totals match perfectly
+    if (totalAmountPaid > sumCategoryPaid) {
+      const diff = totalAmountPaid - sumCategoryPaid;
+      categoryBalances.push({
+        studentFeeId: 'unallocated',
+        feeCategory: 'Other / Unallocated Payment',
+        term: '-',
+        originalAmount: 0,
+        concessionAmount: 0,
+        totalAssignedFee: 0,
+        totalPaid: diff,
+        remainingAmount: 0,
+        status: 'Overpaid',
+        overpaidAmount: diff
+      });
+    }
+
+    const totalRemainingFees = categoryBalances.reduce((sum, c) => sum + c.remainingAmount, 0);
+
+    res.json({
+      student: {
+        id: student._id,
+        studentName: student.studentName,
+        admissionNumber: student.admissionNumber,
+        className: student.currentClass,
+        section: student.section || 'A',
+        academicYear: targetYear || student.academicYear || '',
+        photoUrl: student.photoUrl || student.passport_photo || null,
+        fatherName: student.fatherName || '',
+        fatherPhone: student.fatherPhone || ''
+      },
+      summary: {
+        totalAssignedFees,
+        totalAmountPaid,
+        totalRemainingFees
+      },
+      payments: paymentHistoryRows,
+      categoryBalances
+    });
+  } catch (error) {
+    console.error('Error in getStudentPaymentHistory:', error);
+    res.status(500).json({ error: 'Server error fetching student payment history' });
+  }
+};
