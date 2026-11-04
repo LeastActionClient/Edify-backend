@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { createPayment, getPaymentHistory, generateInvoicePDF, getPaymentInvoiceData, deletePayment, sharePaymentWhatsApp, renderFrontendPdf } from '../controllers/paymentController.js';
+import { createPayment, getPaymentHistory, getStudentPaymentHistory, generateInvoicePDF, getPaymentInvoiceData, deletePayment, sharePaymentWhatsApp, renderFrontendPdf } from '../controllers/paymentController.js';
 import { authenticate, authorizeSuperAdmin } from '../middlewares/authMiddleware.js';
 
 const router = Router();
@@ -12,6 +12,7 @@ router.use(authenticate);
 
 router.post('/', createPayment);
 router.get('/', getPaymentHistory);
+router.get('/student-history/:studentId', getStudentPaymentHistory);
 router.get('/invoice-data/:id', getPaymentInvoiceData);
 router.get('/invoice/:id', generateInvoicePDF);
 router.delete('/:id', authorizeSuperAdmin, deletePayment);
