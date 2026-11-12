@@ -16,6 +16,7 @@ import concessionRoutes from './concessionRoutes.js';
 import idCardRoutes from './idCardRoutes.js';
 import teacherRoutes from './teacherRoutes.js';
 import accountRoutes from './accountRoutes.js';
+import progressCardRoutes from './progressCardRoutes.js';
 
 const router = Router();
 
@@ -36,5 +37,6 @@ router.use('/concessions', concessionRoutes);
 router.use('/id-cards', idCardRoutes);
 router.use('/teachers', teacherRoutes);
 router.use('/accounts', accountRoutes);
+router.use('/progress-cards', progressCardRoutes);
 
 export default router;

@@ -267,6 +267,7 @@ const RECEIPT_SUMMARY_GAP_MM = 1.4;
 
 const RECEIPT_COLORS = {
   orange: '#013e8b',
+  tableHeader: '#A51F2B',
   lightOrange: '#E0F2FE',
   darkGrey: '#555555',
   border: '#ECECEC',
@@ -338,17 +339,17 @@ const drawReceiptHeader = ({ doc, innerX, innerY, innerWidth, payment, invoice }
   }
 
   const textStartX = innerX + logoWidth + mmToPt(1);
-  doc.fillColor('#013e8b').font('Helvetica-Bold').fontSize(14)
-    .text('LOTUS', textStartX, innerY + mmToPt(0), { lineBreak: false });
+  doc.fillColor('#013e8b').font('Helvetica-Bold').fontSize(12)
+    .text('STANFORD PARK', textStartX, innerY + mmToPt(0), { lineBreak: false });
   doc.fillColor('#b89531').font('Helvetica-Bold').fontSize(9)
-    .text('Nursery & Primary School', textStartX, innerY + mmToPt(4.5), { lineBreak: false });
+    .text('EDIFY SCHOOL', textStartX, innerY + mmToPt(4.5), { lineBreak: false });
     
   doc.moveTo(textStartX, innerY + mmToPt(8.5))
     .lineTo(badgeX - mmToPt(1), innerY + mmToPt(8.5))
     .lineWidth(0.5).strokeColor('#00a2e8').stroke();
 
-  doc.fillColor('#00a2e8').font('Helvetica-Bold').fontSize(6.5)
-    .text('#20/16, Mariyamman Koil St, Kagithapattarai, Vellore.', textStartX, innerY + mmToPt(9.5), { lineBreak: false });
+  doc.fillColor('#00a2e8').font('Helvetica-Bold').fontSize(4.8)
+    .text('1ST WEST CROSS ROAD, GANDHI NAGAR(WEST) VELLORE-632006', textStartX, innerY + mmToPt(9.5), { lineBreak: false });
 
   doc.save();
   doc.roundedRect(badgeX, innerY + mmToPt(1.0), badgeWidth, badgeHeight, mmToPt(4))
@@ -520,7 +521,7 @@ const drawReceiptTable = ({ doc, innerX, innerWidth, topY, groupedRows, showLess
   doc.roundedRect(innerX, topY, innerWidth, tableHeight, tableRadius).clip();
 
   doc.rect(innerX, topY, innerWidth, headerHeight)
-    .fillAndStroke(RECEIPT_COLORS.orange, RECEIPT_COLORS.orange);
+    .fillAndStroke(RECEIPT_COLORS.tableHeader, RECEIPT_COLORS.tableHeader);
 
   doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(headerFontSize)
     .text('Fee Description', innerX + mmToPt(1.8), topY + mmToPt(2.1), {
@@ -745,8 +746,8 @@ const drawReceiptGrandTotal = ({ doc, innerX, innerWidth, topY, amount }) => {
 const drawReceiptFooter = ({ doc, x, y, width, height }) => {
   doc.save();
   doc.rect(x, y, width, height).fill(RECEIPT_COLORS.orange);
-  doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(8.2)
-    .text('#20/16, Mariyamman Koil St, Kagithapattarai, Vellore.', x, y + mmToPt(1.5), {
+  doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(7.5)
+    .text('1ST WEST CROSS ROAD, GANDHI NAGAR(WEST) VELLORE-632006', x, y + mmToPt(1.5), {
       width,
       align: 'center',
       lineBreak: false,
@@ -1103,17 +1104,17 @@ const drawReceiptHeaderV2 = ({ doc, innerX, innerY, innerWidth, payment, invoice
   }
 
   const textStartX = innerX + logoWidth + mmToPt(1);
-  doc.fillColor('#013e8b').font('Helvetica-Bold').fontSize(14)
-    .text('LOTUS', textStartX, innerY + mmToPt(0), { lineBreak: false });
+  doc.fillColor('#013e8b').font('Helvetica-Bold').fontSize(12)
+    .text('STANFORD PARK', textStartX, innerY + mmToPt(0), { lineBreak: false });
   doc.fillColor('#b89531').font('Helvetica-Bold').fontSize(9)
-    .text('Nursery & Primary School', textStartX, innerY + mmToPt(4.5), { lineBreak: false });
+    .text('EDIFY SCHOOL', textStartX, innerY + mmToPt(4.5), { lineBreak: false });
     
   doc.moveTo(textStartX, innerY + mmToPt(8.5))
     .lineTo(badgeX - mmToPt(1), innerY + mmToPt(8.5))
     .lineWidth(0.5).strokeColor('#00a2e8').stroke();
 
-  doc.fillColor('#00a2e8').font('Helvetica-Bold').fontSize(6.5)
-    .text('#20/16, Mariyamman Koil St, Kagithapattarai, Vellore.', textStartX, innerY + mmToPt(9.5), { lineBreak: false });
+  doc.fillColor('#00a2e8').font('Helvetica-Bold').fontSize(4.8)
+    .text('1ST WEST CROSS ROAD, GANDHI NAGAR(WEST) VELLORE-632006', textStartX, innerY + mmToPt(9.5), { lineBreak: false });
 
   doc.save();
   doc.roundedRect(badgeX, innerY + mmToPt(1.0), badgeWidth, badgeHeight, mmToPt(4))
@@ -1262,7 +1263,7 @@ const drawReceiptTablePage = ({ doc, innerX, innerWidth, topY, rows, columns, sh
     .fillAndStroke('#FFFFFF', RECEIPT_COLORS.border);
   
   doc.rect(innerX, topY, innerWidth, headerHeight)
-    .fillAndStroke(RECEIPT_COLORS.orange, RECEIPT_COLORS.orange);
+    .fillAndStroke(RECEIPT_COLORS.tableHeader, RECEIPT_COLORS.tableHeader);
 
   doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(columns.headerFontSize)
     .text('Fee Description', innerX + columns.paddingX, topY + mmToPt(2.0), {
@@ -2454,7 +2455,7 @@ export const sharePaymentWhatsApp = async (req, res) => {
     }
 
     const publicPdfUrl = `${backendUrl}/api/payments/public-invoice/${id}?download=inline&bill=first`;
-    const message = `Dear Parent, we have received a payment for ${name}. Thank you. - Lotus Nursery and Primary School\n\nYou can view and download your receipt here:\n${publicPdfUrl}`;
+    const message = `Dear Parent, we have received a payment for ${name}. Thank you. - Stanford Park Edify School\n\nYou can view and download your receipt here:\n${publicPdfUrl}`;
     
     const waLink = `https://wa.me/${parsed.number}?text=${encodeURIComponent(message)}`;
     

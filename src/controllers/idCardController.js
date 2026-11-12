@@ -59,7 +59,7 @@ export const getIdCards = async (req, res) => {
     }
 
     const students = await Student.find(whereClause)
-      .select('_id admissionNumber studentName currentClass section academicYear RTE isRTE studentStatus photoUrl passport_photo address fatherPhone motherPhone dateOfBirth whatsappNumber')
+      .select('_id admissionNumber studentName currentClass section academicYear RTE isRTE studentStatus photoUrl passport_photo address city state pincode fatherName motherName gender dateOfBirth fatherPhone motherPhone whatsappNumber')
       .sort({ studentName: 1 })
       .lean();
 
@@ -77,7 +77,12 @@ export const getIdCards = async (req, res) => {
         courseType: isRTE ? 'RTE' : 'General',
         photoUrl: photo,
         passport_photo: photo,
-        address: s.address || '',
+        address: s.address || [s.city, s.state, s.pincode].filter(Boolean).join(', '),
+        dateOfBirth: s.dateOfBirth || '',
+        dob: s.dateOfBirth || '',
+        gender: s.gender || '',
+        fatherName: s.fatherName || '',
+        motherName: s.motherName || '',
         phone: s.fatherPhone || s.motherPhone || s.whatsappNumber || '',
         fatherPhone: s.fatherPhone || '',
         motherPhone: s.motherPhone || '',
@@ -114,7 +119,12 @@ export const getIdCardByStudentId = async (req, res) => {
       courseType: isRTE ? 'RTE' : 'General',
       photoUrl: photo,
       passport_photo: photo,
-      address: student.address || '',
+      address: student.address || [student.city, student.state, student.pincode].filter(Boolean).join(', '),
+      dateOfBirth: student.dateOfBirth || '',
+      dob: student.dateOfBirth || '',
+      gender: student.gender || '',
+      fatherName: student.fatherName || '',
+      motherName: student.motherName || '',
       phone: student.fatherPhone || student.motherPhone || student.whatsappNumber || '',
       fatherPhone: student.fatherPhone || '',
       motherPhone: student.motherPhone || '',
@@ -145,7 +155,12 @@ export const generateIdCards = async (req, res) => {
         academicYear: s.academicYear || '',
         photoUrl: photo,
         passport_photo: photo,
-        address: s.address || '',
+        address: s.address || [s.city, s.state, s.pincode].filter(Boolean).join(', '),
+        dateOfBirth: s.dateOfBirth || '',
+        dob: s.dateOfBirth || '',
+        gender: s.gender || '',
+        fatherName: s.fatherName || '',
+        motherName: s.motherName || '',
         phone: s.fatherPhone || s.motherPhone || s.whatsappNumber || '',
         fatherPhone: s.fatherPhone || '',
         motherPhone: s.motherPhone || '',
