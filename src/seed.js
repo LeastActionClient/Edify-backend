@@ -33,8 +33,8 @@ async function seedUser({ username, password, role }) {
 }
 
 async function main() {
-  const superAdminUsername = process.env.SUPERADMIN_USERNAME || 'lotusschool';
-  const superAdminPassword = process.env.SUPERADMIN_PASSWORD || 'Lnps@2015';
+  const superAdminUsername = process.env.SUPERADMIN_USERNAME || 'superadmin';
+  const superAdminPassword = process.env.SUPERADMIN_PASSWORD || 'admin123';
   const adminUsername = process.env.ADMIN_USERNAME || 'admin';
   const adminPassword = process.env.ADMIN_PASSWORD || 'admin123';
 

@@ -46,15 +46,21 @@ async function seedSuperAdmin() {
       username: { $regex: new RegExp(`^${superAdminIdentifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }
     });
 
-    if (existingUser) {
-      console.log(`[INFO] Super Admin account "${existingUser.username}" already exists.`);
-      console.log(`       Role: ${existingUser.role} | Status: ${existingUser.isActive ? 'Active' : 'Inactive'}`);
-      console.log('[INFO] Existing account was preserved without resetting or overwriting credentials.');
-      return;
-    }
-
     // Securely hash password using bcrypt (matching existing auth system: 10 salt rounds)
     const hashedPassword = await bcrypt.hash(superAdminPassword, 10);
+
+    if (existingUser) {
+      existingUser.password = hashedPassword;
+      existingUser.role = 'SUPER_ADMIN';
+      existingUser.isActive = true;
+      existingUser.lastActivity = new Date();
+      await existingUser.save();
+
+      console.log(`[SUCCESS] Super Admin account "${existingUser.username}" updated with new password.`);
+      console.log(`          Role: ${existingUser.role} | Status: Active`);
+      console.log('[SUCCESS] You can now log in using this account on the login page.');
+      return;
+    }
 
     // Create the Super Admin record with required schema fields
     const newAdmin = await User.create({
