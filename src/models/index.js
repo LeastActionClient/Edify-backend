@@ -23,3 +23,6 @@ export { default as StudentFeeConcession } from './StudentFeeConcession.js';
 export { default as Teacher } from './Teacher.js';
 export { default as AccountSetting } from './AccountSetting.js';
 export { default as Expense } from './Expense.js';
+export { default as ProgressCard } from './ProgressCard.js';
+export { default as ProgressCardSubject } from './ProgressCardSubject.js';
+export { default as ProgressCardExam } from './ProgressCardExam.js';
