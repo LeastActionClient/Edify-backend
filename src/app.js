@@ -13,7 +13,7 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 
-const allowedOrigins = (process.env.CORS_ORIGIN || process.env.FRONTEND_URL || 'https://lotus-fe-theta.vercel.app')
+const allowedOrigins = (process.env.CORS_ORIGIN || process.env.FRONTEND_URL || 'https://lotus-fe-theta.vercel.app,https://edify-fe.vercel.app')
   .split(',')
   .map((origin) => origin.trim())
   .filter(Boolean)
