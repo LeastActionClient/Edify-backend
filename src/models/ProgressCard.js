@@ -1,12 +1,15 @@
 import mongoose from 'mongoose';
 
 const subjectScoreSchema = new mongoose.Schema({
+  subjectId: { type: mongoose.Schema.Types.ObjectId, ref: 'ProgressCardSubject' },
   subject: { type: String, required: true, trim: true },
+  maxMarks: { type: Number, default: 100 },
   mark: { type: mongoose.Schema.Types.Mixed, default: '' },
   grade: { type: String, default: '', trim: true }
 }, { _id: false });
 
 const coScholasticScoreSchema = new mongoose.Schema({
+  subjectId: { type: mongoose.Schema.Types.ObjectId, ref: 'ProgressCardSubject' },
   subject: { type: String, required: true, trim: true },
   grade: { type: String, default: '', trim: true }
 }, { _id: false });
@@ -21,8 +24,7 @@ const progressCardSchema = new mongoose.Schema({
   academicYear: {
     type: String,
     required: true,
-    trim: true,
-    default: '2025 - 2026'
+    trim: true
   },
   term: {
     type: String,
@@ -53,27 +55,13 @@ const progressCardSchema = new mongoose.Schema({
   },
   scholastic: {
     type: [subjectScoreSchema],
-    default: () => [
-      { subject: 'Tamil', mark: 57, grade: 'B' },
-      { subject: 'English I', mark: 55, grade: 'B' },
-      { subject: 'Maths', mark: 60, grade: 'B' },
-      { subject: 'EVS', mark: 63, grade: 'B' },
-      { subject: 'Com', mark: 83, grade: 'A' },
-      { subject: 'Hindi', mark: 76, grade: 'B+' },
-      { subject: 'ENGLISH II', mark: 54, grade: 'C' }
-    ]
+    default: []
   },
-  totalMarks: { type: mongoose.Schema.Types.Mixed, default: 448 },
-  overallGrade: { type: String, default: 'B' },
+  totalMarks: { type: mongoose.Schema.Types.Mixed, default: '' },
+  overallGrade: { type: String, default: '' },
   coScholastic: {
     type: [coScholasticScoreSchema],
-    default: () => [
-      { subject: 'G.K', grade: 'A' },
-      { subject: 'V.E', grade: 'B' },
-      { subject: 'ENGLISH DICTATION', grade: 'D' },
-      { subject: 'TAMIL DICTATION', grade: 'D' },
-      { subject: 'EVS DICTATION', grade: 'B+' }
-    ]
+    default: []
   },
   selfAwareness: {
     goals: { type: String, default: '' },
