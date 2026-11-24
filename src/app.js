@@ -13,22 +13,41 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 
-const allowedOrigins = (process.env.CORS_ORIGIN || process.env.FRONTEND_URL || 'https://edify-fe.vercel.app')
-  .split(',')
-  .map((origin) => origin.trim())
-  .filter(Boolean)
-  .map((origin) => {
-    try {
-      return new URL(origin).origin;
-    } catch (error) {
-      return origin;
-    }
-  });
+const allowedOrigins = [
+  'https://edify-fe.vercel.app',
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://localhost:5000',
+  'http://localhost:5001',
+  ...(process.env.CORS_ORIGIN || process.env.FRONTEND_URL || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+    .map((origin) => {
+      try {
+        return new URL(origin).origin;
+      } catch (error) {
+        return origin;
+      }
+    })
+];
 
 const corsOptions = {
-  origin: allowedOrigins.length > 0 ? allowedOrigins : true,
+  origin: (origin, callback) => {
+    // Allow non-browser requests or missing origin
+    if (!origin) return callback(null, true);
+
+    const isAllowed =
+      allowedOrigins.includes(origin) ||
+      origin.endsWith('.vercel.app') ||
+      origin.includes('localhost') ||
+      origin.includes('127.0.0.1');
+
+    return callback(null, isAllowed ? origin : true);
+  },
+  credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin']
 };
 
 app.use(cors(corsOptions));
@@ -41,12 +60,6 @@ app.get('/', (req, res) => {
 });
 app.get('/favicon.ico', (req, res) => {
   res.status(204).end();
-});
-app.use((req, res, next) => {
-  if (req.method === 'OPTIONS') {
-    return cors(corsOptions)(req, res, next);
-  }
-  return next();
 });
 app.use('/api', apiRoutes);
 

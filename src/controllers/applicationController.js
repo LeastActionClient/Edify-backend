@@ -1,9 +1,10 @@
 import mongoose from 'mongoose';
-import { Application, ActivityLog, Class, Section, StudentFee, Payment } from '../models/index.js';
+import { Application, ActivityLog, Class, Section, StudentFee, Payment, Invoice } from '../models/index.js';
 import { createStudentWithGeneratedAdmissionNumber } from '../services/studentAdmissionService.js';
 import { getCurrentApplicationNumber, reserveNextApplicationNumber, isDuplicateApplicationNumberError } from '../services/applicationNumberService.js';
 import { isDuplicateAdmissionNumberError } from '../services/admissionNumberService.js';
 import { getApplicationFeeAmount } from '../services/settingsService.js';
+import { generateInvoiceNumber } from './paymentController.js';
 
 const getDuplicateConflict = (error) => {
   if (isDuplicateApplicationNumberError(error)) {
@@ -42,7 +43,8 @@ export const getNextNumbers = async (req, res) => {
 export const createApplication = async (req, res) => {
   const {
     studentName, parentName, fatherName, motherName, fatherPhone, motherPhone,
-    guardianName, guardianPhone, address, applyingClass, previousSchool, siblings, feePaid
+    guardianName, guardianPhone, address, applyingClass, previousSchool, siblings,
+    feePaid, paymentMethod, referenceNumber
   } = req.body;
 
   const fName = (fatherName || '').trim();
@@ -95,14 +97,25 @@ export const createApplication = async (req, res) => {
 
       if (isFeePaid && feeAmount > 0) {
         try {
-          await Payment.create([{
+          const invNum = await generateInvoiceNumber();
+          const cleanRef = (referenceNumber || '').trim();
+          const cleanMethod = (paymentMethod || 'CASH').toUpperCase();
+          const [payment] = await Payment.create([{
             applicationId: application._id,
             paymentType: 'APPLICATION',
             amount: feeAmount,
-            paymentMethod: 'CASH',
+            paymentMethod: cleanMethod,
+            referenceNumber: cleanRef || undefined,
             status: 'PAID',
-            remarks: 'Application Fee for ' + applicationId,
+            remarks: 'Application Fee for ' + applicationId + (cleanRef ? ` (Ref: ${cleanRef})` : ''),
             recordedById: req.user ? req.user.id : undefined
+          }], { session });
+
+          await Invoice.create([{
+            invoiceNumber: invNum,
+            paymentId: payment._id,
+            applicationId: application._id,
+            generatedDate: new Date()
           }], { session });
         } catch (paymentErr) {
           console.error('Failed to record application fee payment:', paymentErr);
@@ -147,7 +160,7 @@ export const createApplication = async (req, res) => {
 export const toggleFeeStatus = async (req, res) => {
   try {
     const { id } = req.params;
-    const { feePaid } = req.body;
+    const { feePaid, paymentMethod, referenceNumber } = req.body;
 
     const application = await Application.findById(id);
     if (!application) {
@@ -160,6 +173,32 @@ export const toggleFeeStatus = async (req, res) => {
     if (feePaid && !application.feePaid) {
       feeAmount = await getApplicationFeeAmount();
       feePaidDate = new Date();
+      const existingPayment = await Payment.findOne({ applicationId: id, paymentType: 'APPLICATION' });
+      if (!existingPayment && feeAmount > 0) {
+        try {
+          const invNum = await generateInvoiceNumber();
+          const cleanRef = (referenceNumber || '').trim();
+          const cleanMethod = (paymentMethod || 'CASH').toUpperCase();
+          const payment = await Payment.create({
+            applicationId: id,
+            paymentType: 'APPLICATION',
+            amount: feeAmount,
+            paymentMethod: cleanMethod,
+            referenceNumber: cleanRef || undefined,
+            status: 'PAID',
+            remarks: 'Application Fee for ' + application.applicationId + (cleanRef ? ` (Ref: ${cleanRef})` : ''),
+            recordedById: req.user ? req.user.id : undefined
+          });
+          await Invoice.create({
+            invoiceNumber: invNum,
+            paymentId: payment._id,
+            applicationId: id,
+            generatedDate: new Date()
+          });
+        } catch (pErr) {
+          console.error('Failed to record payment in toggleFeeStatus:', pErr);
+        }
+      }
     } else if (!feePaid) {
       feeAmount = 0;
       feePaidDate = null;

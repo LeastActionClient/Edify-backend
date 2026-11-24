@@ -9,7 +9,7 @@ import { normalizeIndianMobile } from '../utils/phoneNumber.js';
 
 const EFFECTIVE_CONCESSION_STATUSES = new Set(['Active', 'Completed', 'Expired']);
 
-const generateInvoiceNumber = async () => {
+export const generateInvoiceNumber = async () => {
   const currentYear = new Date().getFullYear();
   // Find the invoice with the highest number for the current year
   const lastInvoice = await Invoice.findOne({ invoiceNumber: new RegExp(`^INV-${currentYear}-`) })
@@ -963,10 +963,19 @@ const getReceiptInfoGroups = (payment, invoice) => {
   const application = payment.applicationId || payment.application || {};
   const isApplication = payment.paymentType === 'APPLICATION';
   const receiptDateValue = payment.paymentDate || invoice?.generatedDate || payment.createdAt;
-  const paymentModeValue = String(payment.paymentMethod || payment.paymentMode || payment.mode || '-').toUpperCase();
-  const receiptNumberValue = payment.invoice?.invoiceNumber || payment._id?.toString?.() || '-';
+  const basePaymentMode = String(payment.paymentMethod || payment.paymentMode || payment.mode || '-').toUpperCase();
+  const paymentModeValue = payment.referenceNumber && basePaymentMode !== '-'
+    ? `${basePaymentMode} (${payment.referenceNumber})`
+    : basePaymentMode;
+  const rawInvoice = invoice?.invoiceNumber || payment.invoice?.invoiceNumber;
+  const receiptNumberValue = rawInvoice
+    || (payment.referenceNumber ? `REF-${payment.referenceNumber}` : '')
+    || (isApplication ? `INV-APP-${application.applicationId || (payment._id ? payment._id.toString().slice(-6).toUpperCase() : '')}` : '')
+    || payment._id?.toString?.()
+    || '-';
+  const rawClass = isApplication ? application.applyingClass : student.currentClass;
   const classValue = isApplication
-    ? application.applyingClass || '-'
+    ? (/^\d+$/.test(rawClass) ? `${rawClass} STD` : (rawClass || '-'))
     : student.currentClass
       ? `${student.currentClass}${student.section ? ` - ${student.section}` : ''}`
       : '-';
@@ -979,7 +988,7 @@ const getReceiptInfoGroups = (payment, invoice) => {
         ],
         [
           { label: 'Applicant Name', value: application.studentName || '-', valueColor: RECEIPT_COLORS.text, valueFontSize: 7.4 },
-          { label: 'Applying Class', value: application.applyingClass || '-', align: 'right' }
+          { label: 'Applying Class', value: classValue, align: 'right' }
         ],
         [
           { label: 'Date', value: formatReceiptDate(receiptDateValue) },
@@ -2101,6 +2110,15 @@ export const getPaymentHistory = async (req, res) => {
     const paymentsWithInvoices = payments.map(p => {
       const pObj = { ...p };
       pObj.invoice = invoiceMap[p._id.toString()] || null;
+      if (!pObj.invoice && pObj.paymentType === 'APPLICATION') {
+        pObj.invoice = {
+          invoiceNumber: pObj.referenceNumber
+            ? `INV-APP-${pObj.referenceNumber}`
+            : `INV-APP-${pObj.applicationId?.applicationId || pObj._id.toString().slice(-6).toUpperCase()}`,
+          paymentId: pObj._id,
+          generatedDate: pObj.paymentDate || pObj.createdAt
+        };
+      }
       if (pObj.studentId) {
         const rteVal = `${pObj.studentId.RTE || ''}`.trim().toLowerCase();
         pObj.studentId.isRTE = pObj.studentId.isRTE === true || ['rte', 'yes', 'true', '1'].includes(rteVal);
