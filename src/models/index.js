@@ -34,3 +34,4 @@ export { default as SubjectRequirement } from './SubjectRequirement.js';
 export { default as Timetable } from './Timetable.js';
 export { default as TimetableEntry } from './TimetableEntry.js';
 
+export { default as BonafideCertificate } from './BonafideCertificate.js';

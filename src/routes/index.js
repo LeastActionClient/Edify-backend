@@ -18,6 +18,7 @@ import teacherRoutes from './teacherRoutes.js';
 import accountRoutes from './accountRoutes.js';
 import progressCardRoutes from './progressCardRoutes.js';
 import timetableRoutes from './timetableRoutes.js';
+import bonafideCertificateRoutes from './bonafideCertificateRoutes.js';
 
 const router = Router();
 
@@ -41,5 +42,6 @@ router.use('/teachers', teacherRoutes);
 router.use('/accounts', accountRoutes);
 router.use('/progress-cards', progressCardRoutes);
 router.use('/timetable', timetableRoutes);
+router.use('/bonafide-certificates', bonafideCertificateRoutes);
 
 export default router;
