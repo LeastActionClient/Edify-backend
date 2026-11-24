@@ -17,8 +17,10 @@ import idCardRoutes from './idCardRoutes.js';
 import teacherRoutes from './teacherRoutes.js';
 import accountRoutes from './accountRoutes.js';
 import progressCardRoutes from './progressCardRoutes.js';
+import timetableRoutes from './timetableRoutes.js';
 
 const router = Router();
+
 
 router.use('/auth', authRoutes);
 router.use('/users', userRoutes);
@@ -38,5 +40,6 @@ router.use('/id-cards', idCardRoutes);
 router.use('/teachers', teacherRoutes);
 router.use('/accounts', accountRoutes);
 router.use('/progress-cards', progressCardRoutes);
+router.use('/timetable', timetableRoutes);
 
 export default router;

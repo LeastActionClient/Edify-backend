@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "nodemon src/index.js",
     "start": "node src/index.js",
+    "seed": "node src/seedAll.js",
     "seed:admin": "node src/seed.js",
     "seed:superadmin": "node src/seedSuperAdmin.js",
     "seed:collection": "node src/seedCollection.js"

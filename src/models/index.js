@@ -26,3 +26,11 @@ export { default as Expense } from './Expense.js';
 export { default as ProgressCard } from './ProgressCard.js';
 export { default as ProgressCardSubject } from './ProgressCardSubject.js';
 export { default as ProgressCardExam } from './ProgressCardExam.js';
+export { default as Subject } from './Subject.js';
+export { default as TeacherSubject } from './TeacherSubject.js';
+export { default as TeacherAvailability } from './TeacherAvailability.js';
+export { default as TimetableConfig } from './TimetableConfig.js';
+export { default as SubjectRequirement } from './SubjectRequirement.js';
+export { default as Timetable } from './Timetable.js';
+export { default as TimetableEntry } from './TimetableEntry.js';
+

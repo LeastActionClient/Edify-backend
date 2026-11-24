@@ -95,6 +95,8 @@ const mergeCardWithSubjects = (student, effectiveClass, effectiveSection, target
   const activeScholasticSubjects = allScholasticSubjects.filter((s) => s.isActive);
   const allCoScholasticSubjects = classSubjects.filter((s) => s.category === 'coScholastic');
   const activeCoScholasticSubjects = allCoScholasticSubjects.filter((s) => s.isActive);
+  const allExtraCurricularSubjects = classSubjects.filter((s) => s.category === 'extraCurricular');
+  const activeExtraCurricularSubjects = allExtraCurricularSubjects.filter((s) => s.isActive);
 
   let scholastic = [];
   if (allScholasticSubjects.length > 0) {
@@ -126,6 +128,24 @@ const mergeCardWithSubjects = (student, effectiveClass, effectiveSection, target
     });
   } else if (card?.coScholastic?.length > 0) {
     coScholastic = card.coScholastic;
+  }
+
+  let extraCurricular = [];
+  if (allExtraCurricularSubjects.length > 0) {
+    extraCurricular = activeExtraCurricularSubjects.map((subj) => {
+      const saved = findSavedScore(card?.extraCurricular, subj);
+      const mark = saved?.mark !== undefined && saved?.mark !== null ? saved.mark : '';
+      const grade = saved?.grade || (mark !== '' ? calculateGrade(mark, subj.maxMarks || 100) : '');
+      return {
+        subjectId: subj._id,
+        subject: subj.name,
+        maxMarks: subj.maxMarks || 100,
+        mark,
+        grade
+      };
+    });
+  } else if (card?.extraCurricular?.length > 0) {
+    extraCurricular = card.extraCurricular;
   }
 
   const computedTotals = computeScholasticTotals(scholastic);
@@ -177,6 +197,7 @@ const mergeCardWithSubjects = (student, effectiveClass, effectiveSection, target
     totalMarks,
     overallGrade,
     coScholastic,
+    extraCurricular,
     selfAwareness: card?.selfAwareness || {
       goals: '',
       strengths: '',
@@ -199,7 +220,7 @@ export const getSubjects = async (req, res) => {
     if (className && className.trim()) {
       filter.className = className.trim();
     }
-    if (category && ['scholastic', 'coScholastic'].includes(category)) {
+    if (category && ['scholastic', 'coScholastic', 'extraCurricular'].includes(category)) {
       filter.category = category;
     }
     if (includeInactive !== 'true') {
@@ -236,7 +257,7 @@ export const createOrSelectSubjects = async (req, res) => {
     }
     const targetClass = className.trim();
 
-    if (!['scholastic', 'coScholastic'].includes(category)) {
+    if (!['scholastic', 'coScholastic', 'extraCurricular'].includes(category)) {
       return res.status(400).json({ error: 'Invalid subject category' });
     }
 
@@ -365,7 +386,11 @@ export const updateSubject = async (req, res) => {
     // Propagate rename / maxMarks update consistently to cards in the SAME academicYear & className
     // without touching historical cards from other years/classes
     if (trimmedNewName !== oldName || maxMarks !== undefined) {
-      const arrayField = subjectDoc.category === 'scholastic' ? 'scholastic' : 'coScholastic';
+      const arrayField = subjectDoc.category === 'scholastic'
+        ? 'scholastic'
+        : subjectDoc.category === 'coScholastic'
+          ? 'coScholastic'
+          : 'extraCurricular';
       const cards = await ProgressCard.find({
         academicYear: subjectDoc.academicYear,
         currentClass: subjectDoc.className
@@ -380,7 +405,7 @@ export const updateSubject = async (req, res) => {
           if (matchesId || matchesName) {
             entry.subjectId = subjectDoc._id;
             entry.subject = trimmedNewName;
-            if (subjectDoc.category === 'scholastic') {
+            if (subjectDoc.category === 'scholastic' || subjectDoc.category === 'extraCurricular') {
               entry.maxMarks = parsedMaxMarks;
             }
             modified = true;
@@ -414,7 +439,11 @@ export const deleteSubject = async (req, res) => {
       return res.status(404).json({ error: 'Subject not found' });
     }
 
-    const arrayField = subjectDoc.category === 'scholastic' ? 'scholastic' : 'coScholastic';
+    const arrayField = subjectDoc.category === 'scholastic'
+      ? 'scholastic'
+      : subjectDoc.category === 'coScholastic'
+        ? 'coScholastic'
+        : 'extraCurricular';
     const cardsInClass = await ProgressCard.find({
       academicYear: subjectDoc.academicYear,
       currentClass: subjectDoc.className
@@ -639,6 +668,7 @@ export const saveProgressCard = async (req, res) => {
       totalMarks,
       overallGrade,
       coScholastic = [],
+      extraCurricular = [],
       selfAwareness,
       teacherRemarks
     } = req.body;
@@ -675,6 +705,7 @@ export const saveProgressCard = async (req, res) => {
 
     const mergedScholastic = mergePreservingInactive(scholastic, existing?.scholastic, true);
     const mergedCoScholastic = mergePreservingInactive(coScholastic, existing?.coScholastic, false);
+    const mergedExtraCurricular = mergePreservingInactive(extraCurricular, existing?.extraCurricular, true);
     const computedTotals = computeScholasticTotals(scholastic);
 
     const updatedCard = await ProgressCard.findOneAndUpdate(
@@ -691,6 +722,7 @@ export const saveProgressCard = async (req, res) => {
         totalMarks: totalMarks !== undefined && totalMarks !== '' ? totalMarks : computedTotals.totalMarks,
         overallGrade: overallGrade || computedTotals.overallGrade,
         coScholastic: mergedCoScholastic,
+        extraCurricular: mergedExtraCurricular,
         selfAwareness,
         teacherRemarks
       },
@@ -802,6 +834,37 @@ export const saveSubjectGradesForStudents = async (req, res) => {
         const totals = computeScholasticTotals(activeRows);
         card.totalMarks = totals.totalMarks;
         card.overallGrade = totals.overallGrade;
+      } else if (category === 'extraCurricular') {
+        const markVal = entry.mark !== undefined && entry.mark !== null ? entry.mark : '';
+        const gradeVal =
+          entry.grade && String(entry.grade).trim()
+            ? String(entry.grade).trim().toUpperCase()
+            : markVal !== ''
+              ? calculateGrade(markVal, parsedMaxMarks)
+              : '';
+
+        if (!card.extraCurricular) card.extraCurricular = [];
+        const idx = card.extraCurricular.findIndex(
+          (item) =>
+            (subjectId && item.subjectId && item.subjectId.toString() === subjectId.toString()) ||
+            String(item.subject || '').trim().toLowerCase() === cleanSubjectName.toLowerCase()
+        );
+
+        if (idx >= 0) {
+          card.extraCurricular[idx].subjectId = subjectId || card.extraCurricular[idx].subjectId;
+          card.extraCurricular[idx].subject = cleanSubjectName;
+          card.extraCurricular[idx].maxMarks = parsedMaxMarks;
+          card.extraCurricular[idx].mark = markVal;
+          card.extraCurricular[idx].grade = gradeVal;
+        } else {
+          card.extraCurricular.push({
+            subjectId: subjectId || undefined,
+            subject: cleanSubjectName,
+            maxMarks: parsedMaxMarks,
+            mark: markVal,
+            grade: gradeVal
+          });
+        }
       } else {
         const gradeVal = entry.grade ? String(entry.grade).trim().toUpperCase() : '';
         const idx = card.coScholastic.findIndex(

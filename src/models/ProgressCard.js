@@ -14,6 +14,14 @@ const coScholasticScoreSchema = new mongoose.Schema({
   grade: { type: String, default: '', trim: true }
 }, { _id: false });
 
+const extraCurricularScoreSchema = new mongoose.Schema({
+  subjectId: { type: mongoose.Schema.Types.ObjectId, ref: 'ProgressCardSubject' },
+  subject: { type: String, required: true, trim: true },
+  maxMarks: { type: Number, default: 100 },
+  mark: { type: mongoose.Schema.Types.Mixed, default: '' },
+  grade: { type: String, default: '', trim: true }
+}, { _id: false });
+
 const progressCardSchema = new mongoose.Schema({
   studentId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -61,6 +69,10 @@ const progressCardSchema = new mongoose.Schema({
   overallGrade: { type: String, default: '' },
   coScholastic: {
     type: [coScholasticScoreSchema],
+    default: []
+  },
+  extraCurricular: {
+    type: [extraCurricularScoreSchema],
     default: []
   },
   selfAwareness: {
