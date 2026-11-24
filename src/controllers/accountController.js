@@ -29,7 +29,7 @@ const getEndOfDay = (dateInfo) => {
 
 export const getAccounts = async (req, res) => {
   try {
-    const { startDate, endDate } = req.query;
+    const { startDate, endDate, paymentMode } = req.query;
 
     // Fetch Total Collections dynamically matching the exact Reports logic (Payments + Application fees)
     // and Total Expenses across all saved expenses
@@ -86,6 +86,10 @@ export const getAccounts = async (req, res) => {
       }
     }
 
+    if (paymentMode && paymentMode !== 'ALL' && paymentMode.trim() !== '') {
+      query.paymentMode = paymentMode.trim().toUpperCase();
+    }
+
     const expenses = await Expense.find(query)
       .sort({ date: -1, createdAt: -1 })
       .lean();
@@ -100,7 +104,7 @@ export const getAccounts = async (req, res) => {
       expenses,
       filteredTotal: roundedFilteredTotal,
       totalCount: expenses.length,
-      hasFilters: Boolean(startDate || endDate)
+      hasFilters: Boolean(startDate || endDate || (paymentMode && paymentMode !== 'ALL'))
     });
   } catch (error) {
     console.error('Error in getAccounts:', error);
@@ -116,7 +120,7 @@ export const updateTotalAmount = async (req, res) => {
 
 export const createExpense = async (req, res) => {
   try {
-    const { date, notes, amount } = req.body;
+    const { date, notes, amount, paymentMode } = req.body;
 
     if (!date) {
       return res.status(400).json({ error: 'Expense date is required' });
@@ -153,10 +157,15 @@ export const createExpense = async (req, res) => {
       ? new Date(Date.UTC(dateInfo.y, dateInfo.m, dateInfo.d, 12, 0, 0))
       : parsedDate;
 
+    const rawMode = String(paymentMode || 'CASH').trim().toUpperCase();
+    const validModes = ['CASH', 'UPI', 'ONLINE', 'BANK_TRANSFER', 'CHEQUE', 'CARD', 'OTHER'];
+    const storedPaymentMode = validModes.includes(rawMode) ? rawMode : 'CASH';
+
     const expense = await Expense.create({
       date: storedDate,
       notes: trimmedNotes,
       amount: roundedAmount,
+      paymentMode: storedPaymentMode,
       createdBy: req.user?.id
     });
 

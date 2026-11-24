@@ -15,7 +15,7 @@ const progressCardSubjectSchema = new mongoose.Schema({
   },
   category: {
     type: String,
-    enum: ['scholastic', 'coScholastic'],
+    enum: ['scholastic', 'coScholastic', 'extraCurricular'],
     required: true,
     default: 'scholastic'
   },
