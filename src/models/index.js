@@ -26,3 +26,4 @@ export { default as Expense } from './Expense.js';
 export { default as ProgressCard } from './ProgressCard.js';
 export { default as ProgressCardSubject } from './ProgressCardSubject.js';
 export { default as ProgressCardExam } from './ProgressCardExam.js';
+export { default as BonafideCertificate } from './BonafideCertificate.js';
